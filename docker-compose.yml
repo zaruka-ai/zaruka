@@ -8,9 +8,9 @@ services:
     environment:
       # Required
       - ZARUKA_TELEGRAM_TOKEN=${ZARUKA_TELEGRAM_TOKEN}
-      - ZARUKA_AI_PROVIDER=${ZARUKA_AI_PROVIDER:-anthropic}
-      - ZARUKA_AI_KEY=${ZARUKA_AI_KEY}
-      # Optional
+      # Optional (can be configured later via Telegram bot)
+      - ZARUKA_AI_PROVIDER=${ZARUKA_AI_PROVIDER:-}
+      - ZARUKA_AI_KEY=${ZARUKA_AI_KEY:-}
       - ZARUKA_AI_MODEL=${ZARUKA_AI_MODEL:-}
       - ZARUKA_AI_BASE_URL=${ZARUKA_AI_BASE_URL:-}
       - ZARUKA_TIMEZONE=${ZARUKA_TIMEZONE:-UTC}
