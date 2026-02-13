@@ -160,11 +160,12 @@ export async function runStart(): Promise<void> {
   // Unset CLAUDECODE to allow nested Claude Code sessions (for Agent SDK)
   delete process.env.CLAUDECODE;
 
+  // Load saved credentials first so ZARUKA_TELEGRAM_TOKEN from ~/.zaruka/.env
+  // is available in process.env when loadConfig() checks for it
+  loadCredentials();
+
   const config = loadConfig();
   const configManager = new ConfigManager(config);
-
-  // Load saved credentials from ~/.zaruka/.env
-  loadCredentials();
 
   // Init DB
   const db = getDb();
