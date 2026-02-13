@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Zaruka — Your Self-Hosted AI Assistant</title>
+  <meta name="description" content="Decentralized personal AI assistant. Runs on your machine, model-agnostic, fully private.">
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="logo.svg">
+</head>
+<body>
+
+  <!-- Hero -->
+  <header class="hero">
+    <img src="logo.svg" alt="Zaruka logo" class="logo">
+    <h1>Zaruka</h1>
+    <p class="tagline">Your self-hosted AI assistant</p>
+
+    <div class="install-box">
+      <code>curl -fsSL https://zaruka.pro/install | bash</code>
+      <button onclick="navigator.clipboard.writeText('curl -fsSL https://zaruka.pro/install | bash')" title="Copy">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+      </button>
+    </div>
+
+    <a href="#features" class="cta">Get started</a>
+  </header>
+
+  <!-- About -->
+  <section class="about" id="about">
+    <h2>What is Zaruka?</h2>
+    <p>A decentralized personal AI assistant that runs entirely on your machine. No data leaves your server.</p>
+    <p>Model-agnostic: use Claude, GPT, Ollama, or any LLM provider you prefer.</p>
+    <p>Chat with it through Telegram. Manage tasks, check weather, track email subscriptions, and more.</p>
+  </section>
+
+  <!-- Features -->
+  <section id="features">
+    <h2>Features</h2>
+    <p class="subtitle">Everything you need in a personal assistant, nothing you don't.</p>
+    <div class="features-grid">
+      <div class="feature-card">
+        <div class="icon">&#128274;</div>
+        <h3>Self-hosted &amp; private</h3>
+        <p>All data stays on your machine. No cloud, no tracking, no compromise.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">&#128172;</div>
+        <h3>Natural language interface</h3>
+        <p>Chat with your assistant via Telegram, just like messaging a friend.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">&#9989;</div>
+        <h3>Task management</h3>
+        <p>Create, track, and complete tasks with smart reminders.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">&#127782;&#65039;</div>
+        <h3>Weather &amp; marine</h3>
+        <p>Get forecasts and ocean conditions for any location worldwide.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">&#128231;</div>
+        <h3>Email tracking</h3>
+        <p>Monitor subscriptions and important emails automatically.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">&#128295;</div>
+        <h3>Extensible skills</h3>
+        <p>Modular architecture — add new skills as you need them.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- How it works -->
+  <section id="how">
+    <h2>How it works</h2>
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <h3>Install</h3>
+          <p>Run the install command or deploy with Coolify. Takes under a minute.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <h3>Configure</h3>
+          <p>Answer a few setup questions: Telegram bot token, AI provider, API key.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <h3>Chat</h3>
+          <p>Open your Telegram bot and start chatting. That's it.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Deployment options -->
+    <div class="deploy">
+      <h3>Deployment options</h3>
+      <div class="deploy-options">
+        <div class="deploy-option">
+          <h4>CLI (npm)</h4>
+          <p>Install globally and run on any machine with Node.js 20+.</p>
+          <code>curl -fsSL https://zaruka.pro/install | bash
+zaruka setup
+zaruka start</code>
+        </div>
+        <div class="deploy-option">
+          <h4>Coolify / Docker</h4>
+          <p>One-click deploy with Coolify, or use Docker Compose directly.</p>
+          <code>git clone https://github.com/user/zaruka
+# Set env vars in Coolify UI or .env
+docker compose up -d</code>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer>
+    <div class="links">
+      <a href="https://github.com/user/zaruka">GitHub</a>
+      <a href="https://www.npmjs.com/package/zaruka">npm</a>
+    </div>
+    <p>MIT License</p>
+  </footer>
+
+</body>
+</html>
