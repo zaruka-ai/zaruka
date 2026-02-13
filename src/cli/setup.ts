@@ -1,5 +1,5 @@
 import { input, select, confirm } from '@inquirer/prompts';
-import { writeFileSync, mkdirSync, chmodSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { join } from 'node:path';
 import { homedir, platform } from 'node:os';
