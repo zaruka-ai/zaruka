@@ -42,11 +42,18 @@ export class ConfigManager {
   }
 
   getModel(): string {
-    return this.config.ai.model;
+    return this.config.ai?.model ?? '';
   }
 
   updateModel(model: string): void {
-    this.config.ai.model = model;
+    if (this.config.ai) {
+      this.config.ai.model = model;
+      this.save();
+    }
+  }
+
+  updateAiConfig(ai: ZarukaConfig['ai']): void {
+    this.config.ai = ai;
     this.save();
   }
 

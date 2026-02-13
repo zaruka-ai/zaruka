@@ -1,12 +1,53 @@
 import { Telegraf, Markup } from 'telegraf';
+import OpenAI from 'openai';
+import Anthropic from '@anthropic-ai/sdk';
 import type { Assistant } from '../core/assistant.js';
 import type { ChatMessage } from '../providers/anthropic.js';
 import type { MessageRepository } from '../db/message-repository.js';
 import type { ConfigManager } from '../core/config-manager.js';
 import type { UsageRepository } from '../db/usage-repository.js';
+import type { ZarukaConfig } from '../core/types.js';
 import { getResourceSnapshot, formatResourceReport } from '../monitor/resources.js';
 
 export type Transcriber = (fileUrl: string) => Promise<string>;
+
+type OnboardingStep = 'provider' | 'api_key' | 'base_url' | 'model' | 'testing';
+
+interface OnboardingState {
+  step: OnboardingStep;
+  provider?: 'anthropic' | 'openai' | 'openai-compatible';
+  apiKey?: string;
+  baseUrl?: string;
+  model?: string;
+}
+
+async function testAiConnection(ai: NonNullable<ZarukaConfig['ai']>): Promise<{ ok: boolean; error?: string }> {
+  try {
+    if (ai.provider === 'anthropic') {
+      const client = new Anthropic({ apiKey: ai.apiKey });
+      await client.messages.create({
+        model: ai.model,
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'Say hi' }],
+      });
+      return { ok: true };
+    }
+    // OpenAI / OpenAI-compatible
+    const client = new OpenAI({
+      apiKey: ai.apiKey || 'no-key',
+      ...(ai.baseUrl ? { baseURL: ai.baseUrl } : {}),
+    });
+    await client.chat.completions.create({
+      model: ai.model,
+      max_tokens: 16,
+      messages: [{ role: 'user', content: 'Say hi' }],
+    });
+    return { ok: true };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: msg };
+  }
+}
 
 /**
  * Detect language from text using Unicode script analysis.
@@ -36,23 +77,26 @@ function detectLanguage(text: string): string | null {
 
 export class TelegramBot {
   private bot: Telegraf;
-  private assistant: Assistant;
+  private assistant: Assistant | null;
   private messageRepo: MessageRepository;
   private configManager: ConfigManager;
   private usageRepo: UsageRepository;
   private transcribe: Transcriber | null;
   private transcriberFactory: (() => Promise<Transcriber | undefined>) | null;
+  private onSetupComplete?: () => Promise<void>;
+  private onboardingState: OnboardingState | null = null;
   private lastLanguage: Map<number, string> = new Map(); // chatId → detected language
   private awaitingThresholdInput: Map<number, 'cpu' | 'ram' | 'disk'> = new Map(); // chatId → resource type
 
   constructor(
     token: string,
-    assistant: Assistant,
+    assistant: Assistant | null,
     messageRepo: MessageRepository,
     configManager: ConfigManager,
     usageRepo: UsageRepository,
     transcribe?: Transcriber,
     transcriberFactory?: () => Promise<Transcriber | undefined>,
+    onSetupComplete?: () => Promise<void>,
   ) {
     this.bot = new Telegraf(token);
     this.assistant = assistant;
@@ -61,6 +105,11 @@ export class TelegramBot {
     this.usageRepo = usageRepo;
     this.transcribe = transcribe ?? null;
     this.transcriberFactory = transcriberFactory ?? null;
+    this.onSetupComplete = onSetupComplete;
+
+    if (!assistant) {
+      this.onboardingState = { step: 'provider' };
+    }
 
     this.registerCommands();
     this.registerCallbacks();
@@ -71,9 +120,18 @@ export class TelegramBot {
     });
   }
 
+  setAssistant(assistant: Assistant): void {
+    this.assistant = assistant;
+    this.onboardingState = null;
+  }
+
   private registerCommands(): void {
     this.bot.command('start', async (ctx) => {
       this.captureChatId(ctx.chat.id);
+      if (this.onboardingState) {
+        await this.sendOnboardingWelcome(ctx);
+        return;
+      }
       await ctx.reply(
         'Hi! I\'m Zaruka, your personal AI assistant.\n\n'
         + 'Just send me a message and I\'ll help you with tasks, weather, and more.\n\n'
@@ -108,6 +166,10 @@ export class TelegramBot {
       await ctx.sendChatAction('typing');
 
       const config = this.configManager.getConfig();
+      if (!config.ai) {
+        await ctx.reply('AI provider is not configured yet. Send /start to set it up.');
+        return;
+      }
       const provider = config.ai.provider;
       const isOAuth = !!(config.ai.authToken);
 
@@ -284,6 +346,42 @@ export class TelegramBot {
       );
     });
 
+    // Onboarding: provider selection
+    this.bot.action(/^onboard:(anthropic|openai|openai-compatible)$/, async (ctx) => {
+      await ctx.answerCbQuery();
+      if (!this.onboardingState) return;
+
+      const provider = ctx.match[1] as OnboardingState['provider'];
+      this.onboardingState.provider = provider;
+
+      if (provider === 'openai-compatible') {
+        this.onboardingState.step = 'base_url';
+        await ctx.editMessageText(
+          'Enter the base URL of your API endpoint.\n\n'
+          + 'Example: http://localhost:11434/v1',
+        );
+      } else {
+        this.onboardingState.step = 'api_key';
+        const hint = provider === 'anthropic'
+          ? 'Send your Anthropic API key (starts with `sk-ant-`).\n\nGet one at: https://console.anthropic.com/settings/keys'
+          : 'Send your OpenAI API key (starts with `sk-`).\n\nGet one at: https://platform.openai.com/api-keys';
+        await ctx.editMessageText(hint);
+      }
+    });
+
+    // Onboarding: model selection
+    this.bot.action(/^onboard_model:(.+)$/, async (ctx) => {
+      await ctx.answerCbQuery();
+      if (!this.onboardingState) return;
+
+      const model = ctx.match[1];
+      this.onboardingState.model = model;
+      this.onboardingState.step = 'testing';
+
+      await ctx.editMessageText('Testing connection...');
+      await this.finishOnboarding(ctx);
+    });
+
     // Back to settings
     this.bot.action('settings:back', async (ctx) => {
       await ctx.answerCbQuery();
@@ -312,6 +410,10 @@ export class TelegramBot {
   private registerHandlers(): void {
     this.bot.on('voice', (ctx) => {
       this.captureChatId(ctx.chat.id);
+      if (!this.assistant) {
+        ctx.reply('AI is not configured yet. Send /start to set up.').catch(() => {});
+        return;
+      }
       this.handleVoice(ctx).catch((err) => console.error('Voice handler error:', err));
     });
 
@@ -320,9 +422,21 @@ export class TelegramBot {
       this.captureChatId(chatId);
       const text = ctx.message.text;
 
+      // Onboarding: route text input to onboarding handler
+      if (this.onboardingState) {
+        this.handleOnboardingText(ctx, text).catch((err) => console.error('Onboarding text error:', err));
+        return;
+      }
+
       // Check if we're awaiting threshold input
       if (this.awaitingThresholdInput.has(chatId)) {
         this.handleThresholdInput(ctx, text).catch((err) => console.error('Threshold input error:', err));
+        return;
+      }
+
+      // No assistant yet (should not happen after onboarding, but guard)
+      if (!this.assistant) {
+        ctx.reply('AI is not configured. Send /start to set up.').catch(() => {});
         return;
       }
 
@@ -428,6 +542,143 @@ export class TelegramBot {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async sendOnboardingWelcome(ctx: any): Promise<void> {
+    this.onboardingState = { step: 'provider' };
+    await ctx.reply(
+      'Welcome to Zaruka! Let\'s set up your AI provider.\n\n'
+      + 'Choose your AI provider:',
+      Markup.inlineKeyboard([
+        [Markup.button.callback('Anthropic (Claude)', 'onboard:anthropic')],
+        [Markup.button.callback('OpenAI (GPT)', 'onboard:openai')],
+        [Markup.button.callback('Self-hosted (Ollama, etc.)', 'onboard:openai-compatible')],
+      ]),
+    );
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async handleOnboardingText(ctx: any, text: string): Promise<void> {
+    if (!this.onboardingState) return;
+    const state = this.onboardingState;
+
+    switch (state.step) {
+      case 'provider': {
+        // User sent text instead of clicking a button
+        await this.sendOnboardingWelcome(ctx);
+        break;
+      }
+      case 'base_url': {
+        // Self-hosted: receive base URL
+        state.baseUrl = text.trim();
+        state.step = 'api_key';
+        await ctx.reply(
+          'Send your API key, or send `-` to skip (if your endpoint has no auth).',
+        );
+        break;
+      }
+      case 'api_key': {
+        // Receive API key
+        state.apiKey = text.trim() === '-' ? undefined : text.trim();
+        state.step = 'model';
+        await this.sendModelSelection(ctx);
+        break;
+      }
+      case 'model': {
+        // Free-text model name (for self-hosted)
+        state.model = text.trim();
+        state.step = 'testing';
+        await ctx.reply('Testing connection...');
+        await this.finishOnboarding(ctx);
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async sendModelSelection(ctx: any): Promise<void> {
+    const state = this.onboardingState;
+    if (!state) return;
+
+    if (state.provider === 'anthropic') {
+      await ctx.reply(
+        'Choose a model:',
+        Markup.inlineKeyboard([
+          [Markup.button.callback('Claude Sonnet 4.5 (recommended)', 'onboard_model:claude-sonnet-4-5-20250929')],
+          [Markup.button.callback('Claude Haiku 4.5 (fast & cheap)', 'onboard_model:claude-haiku-4-5-20251001')],
+          [Markup.button.callback('Claude Opus 4.6 (most powerful)', 'onboard_model:claude-opus-4-6')],
+        ]),
+      );
+    } else if (state.provider === 'openai') {
+      await ctx.reply(
+        'Choose a model:',
+        Markup.inlineKeyboard([
+          [Markup.button.callback('GPT-4o (recommended)', 'onboard_model:gpt-4o')],
+          [Markup.button.callback('GPT-4o mini (fast & cheap)', 'onboard_model:gpt-4o-mini')],
+        ]),
+      );
+    } else {
+      // Self-hosted: ask for model name as text
+      await ctx.reply('Enter your model name (e.g. `llama3`, `mistral`, `qwen2`):');
+    }
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async finishOnboarding(ctx: any): Promise<void> {
+    const state = this.onboardingState;
+    if (!state || !state.provider || !state.model) return;
+
+    const aiConfig: NonNullable<ZarukaConfig['ai']> = {
+      provider: state.provider,
+      apiKey: state.apiKey,
+      model: state.model,
+      baseUrl: state.baseUrl ?? null,
+    };
+
+    // Test connection
+    const result = await testAiConnection(aiConfig);
+    if (!result.ok) {
+      // Reset to let user retry
+      this.onboardingState = { step: 'provider' };
+      await ctx.reply(
+        'Connection failed: ' + (result.error || 'Unknown error') + '\n\n'
+        + 'Please try again.',
+        Markup.inlineKeyboard([
+          [Markup.button.callback('Retry setup', 'onboard:retry')],
+        ]),
+      );
+
+      // Register the retry button handler inline
+      this.bot.action('onboard:retry', async (retryCtx) => {
+        await retryCtx.answerCbQuery();
+        await this.sendOnboardingWelcome(retryCtx);
+      });
+      return;
+    }
+
+    // Save config
+    this.configManager.updateAiConfig(aiConfig);
+
+    // Call the setup complete callback to build the assistant
+    if (this.onSetupComplete) {
+      try {
+        await this.onSetupComplete();
+      } catch (err) {
+        console.error('Failed to initialize assistant after onboarding:', err);
+        await ctx.reply('Setup saved but failed to initialize. Please restart the bot.');
+        return;
+      }
+    }
+
+    await ctx.reply(
+      'Setup complete! Your AI provider is configured.\n\n'
+      + `Provider: ${aiConfig.provider}\n`
+      + `Model: ${aiConfig.model}\n\n`
+      + 'Send me any message and I\'ll help you!',
+    );
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private async processAndReply(ctx: any, userMessage: string): Promise<void> {
     const chatId: number = ctx.chat.id;
 
@@ -442,7 +693,7 @@ export class TelegramBot {
 
     try {
       await ctx.sendChatAction('typing');
-      const response = await this.assistant.process(userMessage, history);
+      const response = await this.assistant!.process(userMessage, history);
       clearInterval(typingInterval);
 
       // Persist both messages to DB (full history, no limit)
@@ -472,7 +723,7 @@ export class TelegramBot {
 
       if (isRateLimit) {
         const config = this.configManager.getConfig();
-        const isOAuth = !!(config.ai.authToken);
+        const isOAuth = !!(config.ai?.authToken);
 
         if (isOAuth) {
           await ctx.reply(

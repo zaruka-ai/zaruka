@@ -7,6 +7,7 @@ export declare class ConfigManager {
     setChatId(chatId: number): void;
     getModel(): string;
     updateModel(model: string): void;
+    updateAiConfig(ai: ZarukaConfig['ai']): void;
     getLanguage(): string;
     updateLanguage(language: string): void;
     getThresholds(): ResourceThresholds;

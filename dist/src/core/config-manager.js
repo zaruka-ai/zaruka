@@ -32,10 +32,16 @@ export class ConfigManager {
         this.save();
     }
     getModel() {
-        return this.config.ai.model;
+        return this.config.ai?.model ?? '';
     }
     updateModel(model) {
-        this.config.ai.model = model;
+        if (this.config.ai) {
+            this.config.ai.model = model;
+            this.save();
+        }
+    }
+    updateAiConfig(ai) {
+        this.config.ai = ai;
         this.save();
     }
     getLanguage() {

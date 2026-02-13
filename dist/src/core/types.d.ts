@@ -78,7 +78,7 @@ export interface ZarukaConfig {
         botToken: string;
         chatId?: number;
     };
-    ai: {
+    ai?: {
         provider: 'anthropic' | 'openai' | 'openai-compatible';
         apiKey?: string;
         authToken?: string;

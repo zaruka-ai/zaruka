@@ -92,7 +92,7 @@ export class UsageRepository {
         // For OAuth users, show subscription info
         if (isOAuth && provider === 'anthropic') {
             lines.push('', '💡 You\'re using Claude via subscription (usage included)');
-            lines.push('📊 View limits: https://claude.ai/settings/limits');
+            lines.push('📊 View usage: https://claude.ai/settings/usage');
         }
         else {
             // For API users, show dashboard links

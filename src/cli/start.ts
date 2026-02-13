@@ -14,7 +14,7 @@ import { MessageRepository } from '../db/message-repository.js';
 import { UsageRepository } from '../db/usage-repository.js';
 import { TasksSkill } from '../skills/tasks/index.js';
 import { WeatherSkill } from '../skills/weather/index.js';
-import { TelegramBot } from '../bot/telegram.js';
+import { TelegramBot, type Transcriber } from '../bot/telegram.js';
 import { Scheduler } from '../scheduler/cron.js';
 import { createZarukaMcpServer } from '../mcp/zaruka-mcp-server.js';
 import { loadCredentials } from '../mcp/credential-tool.js';
@@ -25,12 +25,12 @@ const CONFIG_PATH = join(ZARUKA_DIR, 'config.json');
 const SKILLS_DIR = join(ZARUKA_DIR, 'skills');
 
 function loadConfig(): ZarukaConfig {
-  // Support Docker/Coolify env vars
+  // Support Docker/Coolify env vars (full config)
   if (process.env.ZARUKA_TELEGRAM_TOKEN && process.env.ZARUKA_AI_PROVIDER && process.env.ZARUKA_AI_KEY) {
     return {
       telegram: { botToken: process.env.ZARUKA_TELEGRAM_TOKEN },
       ai: {
-        provider: process.env.ZARUKA_AI_PROVIDER as ZarukaConfig['ai']['provider'],
+        provider: process.env.ZARUKA_AI_PROVIDER as NonNullable<ZarukaConfig['ai']>['provider'],
         apiKey: process.env.ZARUKA_AI_KEY,
         model: process.env.ZARUKA_AI_MODEL || getDefaultModel(process.env.ZARUKA_AI_PROVIDER),
         baseUrl: process.env.ZARUKA_AI_BASE_URL || null,
@@ -41,11 +41,30 @@ function loadConfig(): ZarukaConfig {
     };
   }
 
-  if (!existsSync(CONFIG_PATH)) {
-    console.error('Config not found. Run "zaruka setup" first.');
-    process.exit(1);
+  // Telegram-only: start in onboarding mode (no AI config yet)
+  if (process.env.ZARUKA_TELEGRAM_TOKEN) {
+    // Check if a saved config exists with AI settings
+    if (existsSync(CONFIG_PATH)) {
+      const saved: ZarukaConfig = JSON.parse(readFileSync(CONFIG_PATH, 'utf-8'));
+      // Use saved config but ensure the token from env takes precedence
+      saved.telegram.botToken = process.env.ZARUKA_TELEGRAM_TOKEN;
+      return saved;
+    }
+    return {
+      telegram: { botToken: process.env.ZARUKA_TELEGRAM_TOKEN },
+      timezone: process.env.ZARUKA_TIMEZONE || 'UTC',
+      language: process.env.ZARUKA_LANGUAGE || 'auto',
+      reminderCron: process.env.ZARUKA_REMINDER_CRON || '0 9 * * *',
+    };
   }
-  return JSON.parse(readFileSync(CONFIG_PATH, 'utf-8'));
+
+  // Config file
+  if (existsSync(CONFIG_PATH)) {
+    return JSON.parse(readFileSync(CONFIG_PATH, 'utf-8'));
+  }
+
+  console.error('ZARUKA_TELEGRAM_TOKEN not set. Run "zaruka setup" or set the env var.');
+  process.exit(1);
 }
 
 function getDefaultModel(provider?: string): string {
@@ -153,76 +172,79 @@ export async function runStart(): Promise<void> {
   const messageRepo = new MessageRepository(db);
   const usageRepo = new UsageRepository(db);
 
-  let assistant: Assistant;
+  // Helper to create assistant from current config
+  async function buildAssistant(): Promise<Assistant> {
+    const cfg = configManager.getConfig();
+    const ai = cfg.ai!;
 
-  if (configManager.getConfig().ai.provider === 'anthropic') {
-    // Anthropic path: MCP server + AgentSdkRunner
-    const mcpServer = await createZarukaMcpServer({
-      taskRepo,
-      messageRepo,
-      skillsDir: SKILLS_DIR,
-      authToken: configManager.getConfig().ai.authToken,
-    });
+    if (ai.provider === 'anthropic') {
+      const mcpServer = await createZarukaMcpServer({
+        taskRepo,
+        messageRepo,
+        skillsDir: SKILLS_DIR,
+        authToken: ai.authToken,
+      });
 
-    const runner = new AgentSdkRunner({
-      model: configManager.getModel(),
-      authToken: configManager.getConfig().ai.authToken,
-      systemPrompt: buildSystemPrompt(configManager.getConfig().timezone, configManager.getLanguage()),
-      mcpServer,
-      onUsage: (usage) => {
-        usageRepo.track(usage.model, usage.inputTokens, usage.outputTokens, usage.costUsd);
-      },
-    });
+      const runner = new AgentSdkRunner({
+        model: configManager.getModel(),
+        authToken: ai.authToken,
+        systemPrompt: buildSystemPrompt(cfg.timezone, configManager.getLanguage()),
+        mcpServer,
+        onUsage: (usage) => {
+          usageRepo.track(usage.model, usage.inputTokens, usage.outputTokens, usage.costUsd);
+        },
+      });
 
-    assistant = new Assistant({ sdkRunner: runner, timezone: configManager.getConfig().timezone });
-  } else {
-    // OpenAI path: SkillRegistry + manual tool loop
+      return new Assistant({ sdkRunner: runner, timezone: cfg.timezone });
+    }
+
+    // OpenAI / OpenAI-compatible path
     const usageCallback = (usage: { model: string; inputTokens: number; outputTokens: number; costUsd: number }) => {
       usageRepo.track(usage.model, usage.inputTokens, usage.outputTokens, usage.costUsd);
     };
 
     let provider;
-    switch (configManager.getConfig().ai.provider) {
+    switch (ai.provider) {
       case 'openai':
-        provider = new OpenAIProvider(
-          configManager.getConfig().ai.apiKey!,
-          configManager.getModel(),
-          configManager.getConfig().ai.baseUrl,
-          usageCallback,
-        );
+        provider = new OpenAIProvider(ai.apiKey!, configManager.getModel(), ai.baseUrl, usageCallback);
         break;
       case 'openai-compatible':
-        provider = new OpenAICompatibleProvider(
-          configManager.getConfig().ai.apiKey!,
-          configManager.getModel(),
-          configManager.getConfig().ai.baseUrl!,
-          usageCallback,
-        );
+        provider = new OpenAICompatibleProvider(ai.apiKey!, configManager.getModel(), ai.baseUrl!, usageCallback);
         break;
       default:
-        console.error(`Unknown provider: ${configManager.getConfig().ai.provider}`);
-        process.exit(1);
+        throw new Error(`Unknown provider: ${ai.provider}`);
     }
 
     const registry = new SkillRegistry();
     registry.register(new TasksSkill(taskRepo));
     registry.register(new WeatherSkill());
 
-    assistant = new Assistant({ provider, registry, timezone: configManager.getConfig().timezone });
+    return new Assistant({ provider, registry, timezone: cfg.timezone });
   }
 
-  // Set up voice transcription (OpenAI → Groq → local Whisper → disabled)
-  const transcriberOpts = {
-    openaiApiKey:
-      (configManager.getConfig().ai.provider === 'openai' || configManager.getConfig().ai.provider === 'openai-compatible'
-        ? configManager.getConfig().ai.apiKey
-        : undefined) ?? process.env.OPENAI_API_KEY,
-    openaiBaseUrl: configManager.getConfig().ai.provider === 'openai-compatible' ? (configManager.getConfig().ai.baseUrl ?? undefined) : undefined,
-    groqApiKey: process.env.GROQ_API_KEY,
-  };
-  const transcribe = await createTranscriber(transcriberOpts);
+  // Build assistant if AI is already configured
+  const hasAi = !!config.ai?.provider;
+  let assistant: Assistant | null = null;
+  let transcribe: Transcriber | undefined;
+  let transcriberFactory: (() => Promise<Transcriber | undefined>) | undefined;
 
-  // Create Telegram bot (with ConfigManager + lazy transcriber factory)
+  if (hasAi) {
+    assistant = await buildAssistant();
+
+    // Set up voice transcription (OpenAI -> Groq -> local Whisper -> disabled)
+    const ai = config.ai!;
+    const transcriberOpts = {
+      openaiApiKey:
+        (ai.provider === 'openai' || ai.provider === 'openai-compatible' ? ai.apiKey : undefined)
+        ?? process.env.OPENAI_API_KEY,
+      openaiBaseUrl: ai.provider === 'openai-compatible' ? (ai.baseUrl ?? undefined) : undefined,
+      groqApiKey: process.env.GROQ_API_KEY,
+    };
+    transcribe = await createTranscriber(transcriberOpts);
+    transcriberFactory = () => createTranscriber(transcriberOpts);
+  }
+
+  // Create Telegram bot
   const bot = new TelegramBot(
     configManager.getConfig().telegram.botToken,
     assistant,
@@ -230,7 +252,13 @@ export async function runStart(): Promise<void> {
     configManager,
     usageRepo,
     transcribe,
-    () => createTranscriber(transcriberOpts),
+    transcriberFactory,
+    // Onboarding callback: called when user finishes AI setup in Telegram
+    hasAi ? undefined : async () => {
+      const newAssistant = await buildAssistant();
+      bot.setAssistant(newAssistant);
+      console.log(`Provider: ${configManager.getConfig().ai!.provider} (${configManager.getModel()})`);
+    },
   );
 
   // Get the real send function from the bot for alerts & reminders
@@ -239,7 +267,11 @@ export async function runStart(): Promise<void> {
   // Set up scheduler for reminders + resource monitoring
   new Scheduler(taskRepo, configManager.getConfig().timezone, configManager.getConfig().reminderCron, notifyFn, configManager);
 
-  console.log(`Provider: ${configManager.getConfig().ai.provider} (${configManager.getModel()})`);
+  if (hasAi) {
+    console.log(`Provider: ${configManager.getConfig().ai!.provider} (${configManager.getModel()})`);
+  } else {
+    console.log('No AI provider configured. Onboarding will start in Telegram.');
+  }
   console.log(`Timezone: ${configManager.getConfig().timezone}`);
   console.log(`Resource monitoring: ${configManager.isResourceMonitorEnabled() ? 'enabled' : 'disabled'}`);
   console.log('');

@@ -1,5 +1,35 @@
 import { Telegraf, Markup } from 'telegraf';
+import OpenAI from 'openai';
+import Anthropic from '@anthropic-ai/sdk';
 import { getResourceSnapshot, formatResourceReport } from '../monitor/resources.js';
+async function testAiConnection(ai) {
+    try {
+        if (ai.provider === 'anthropic') {
+            const client = new Anthropic({ apiKey: ai.apiKey });
+            await client.messages.create({
+                model: ai.model,
+                max_tokens: 16,
+                messages: [{ role: 'user', content: 'Say hi' }],
+            });
+            return { ok: true };
+        }
+        // OpenAI / OpenAI-compatible
+        const client = new OpenAI({
+            apiKey: ai.apiKey || 'no-key',
+            ...(ai.baseUrl ? { baseURL: ai.baseUrl } : {}),
+        });
+        await client.chat.completions.create({
+            model: ai.model,
+            max_tokens: 16,
+            messages: [{ role: 'user', content: 'Say hi' }],
+        });
+        return { ok: true };
+    }
+    catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { ok: false, error: msg };
+    }
+}
 /**
  * Detect language from text using Unicode script analysis.
  * Returns language name or null if ambiguous (numbers, links, etc.)
@@ -37,8 +67,11 @@ export class TelegramBot {
     usageRepo;
     transcribe;
     transcriberFactory;
+    onSetupComplete;
+    onboardingState = null;
     lastLanguage = new Map(); // chatId → detected language
-    constructor(token, assistant, messageRepo, configManager, usageRepo, transcribe, transcriberFactory) {
+    awaitingThresholdInput = new Map(); // chatId → resource type
+    constructor(token, assistant, messageRepo, configManager, usageRepo, transcribe, transcriberFactory, onSetupComplete) {
         this.bot = new Telegraf(token);
         this.assistant = assistant;
         this.messageRepo = messageRepo;
@@ -46,6 +79,10 @@ export class TelegramBot {
         this.usageRepo = usageRepo;
         this.transcribe = transcribe ?? null;
         this.transcriberFactory = transcriberFactory ?? null;
+        this.onSetupComplete = onSetupComplete;
+        if (!assistant) {
+            this.onboardingState = { step: 'provider' };
+        }
         this.registerCommands();
         this.registerCallbacks();
         this.registerHandlers();
@@ -53,9 +90,17 @@ export class TelegramBot {
             console.error('Telegraf error:', err);
         });
     }
+    setAssistant(assistant) {
+        this.assistant = assistant;
+        this.onboardingState = null;
+    }
     registerCommands() {
         this.bot.command('start', async (ctx) => {
             this.captureChatId(ctx.chat.id);
+            if (this.onboardingState) {
+                await this.sendOnboardingWelcome(ctx);
+                return;
+            }
             await ctx.reply('Hi! I\'m Zaruka, your personal AI assistant.\n\n'
                 + 'Just send me a message and I\'ll help you with tasks, weather, and more.\n\n'
                 + 'Commands:\n'
@@ -82,6 +127,10 @@ export class TelegramBot {
             this.captureChatId(ctx.chat.id);
             await ctx.sendChatAction('typing');
             const config = this.configManager.getConfig();
+            if (!config.ai) {
+                await ctx.reply('AI provider is not configured yet. Send /start to set it up.');
+                return;
+            }
             const provider = config.ai.provider;
             const isOAuth = !!(config.ai.authToken);
             try {
@@ -92,11 +141,18 @@ export class TelegramBot {
                         + 'No usage limits apply - unlimited requests! 🚀');
                     return;
                 }
-                // For Claude OAuth - try to invoke /usage command
+                // For Claude OAuth - show link to claude.ai (no programmatic API available)
                 if (provider === 'anthropic' && isOAuth) {
-                    // Attempt 1: Send /usage as a command
-                    const response = await this.assistant.process('/usage');
-                    await ctx.reply(`📈 Usage Statistics\n\n${response}`);
+                    const today = this.usageRepo.getToday();
+                    const month = this.usageRepo.getMonth();
+                    await ctx.reply('📈 Usage Statistics\n\n'
+                        + `**Local stats (this bot):**\n`
+                        + `Today: ${today.requests} requests\n`
+                        + `Month: ${month.requests} requests\n\n`
+                        + '**Full account usage:**\n'
+                        + 'View your Claude usage and limits:\n'
+                        + '🔗 https://claude.ai/settings/usage\n\n'
+                        + '⚠️ If you hit limits, the bot will notify you.', { parse_mode: 'Markdown' });
                     return;
                 }
                 // For API-based providers - fall back to local tracking for now
@@ -113,6 +169,16 @@ export class TelegramBot {
         this.bot.command('settings', async (ctx) => {
             this.captureChatId(ctx.chat.id);
             await this.sendSettingsMenu(ctx);
+        });
+        this.bot.command('cancel', async (ctx) => {
+            const chatId = ctx.chat.id;
+            if (this.awaitingThresholdInput.has(chatId)) {
+                this.awaitingThresholdInput.delete(chatId);
+                await ctx.reply('❌ Cancelled.');
+            }
+            else {
+                await ctx.reply('Nothing to cancel.');
+            }
         });
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -185,6 +251,7 @@ export class TelegramBot {
                         Markup.button.callback('90%', `thresh:${key}:90`),
                         Markup.button.callback('95%', `thresh:${key}:95`),
                     ],
+                    [Markup.button.callback('✏️ Custom', `thresh:${key}:custom`)],
                     [Markup.button.callback('« Back', 'settings:back')],
                 ]));
             });
@@ -196,6 +263,47 @@ export class TelegramBot {
             const keyMap = { cpu: 'cpuPercent', ram: 'ramPercent', disk: 'diskPercent' };
             this.configManager.updateThreshold(keyMap[resource], value);
             await ctx.editMessageText(`✓ ${resource.toUpperCase()} alert threshold set to ${value}%`);
+        });
+        // Custom threshold input
+        this.bot.action(/^thresh:(cpu|ram|disk):custom$/, async (ctx) => {
+            await ctx.answerCbQuery();
+            const resource = ctx.match[1];
+            const resourceLabel = { cpu: 'CPU', ram: 'RAM', disk: 'Disk' }[resource];
+            this.awaitingThresholdInput.set(ctx.chat.id, resource);
+            await ctx.editMessageText(`✏️ Custom ${resourceLabel} threshold\n\n`
+                + 'Please send a number between 1 and 100 (e.g., 85)\n\n'
+                + 'Send /cancel to cancel.');
+        });
+        // Onboarding: provider selection
+        this.bot.action(/^onboard:(anthropic|openai|openai-compatible)$/, async (ctx) => {
+            await ctx.answerCbQuery();
+            if (!this.onboardingState)
+                return;
+            const provider = ctx.match[1];
+            this.onboardingState.provider = provider;
+            if (provider === 'openai-compatible') {
+                this.onboardingState.step = 'base_url';
+                await ctx.editMessageText('Enter the base URL of your API endpoint.\n\n'
+                    + 'Example: http://localhost:11434/v1');
+            }
+            else {
+                this.onboardingState.step = 'api_key';
+                const hint = provider === 'anthropic'
+                    ? 'Send your Anthropic API key (starts with `sk-ant-`).\n\nGet one at: https://console.anthropic.com/settings/keys'
+                    : 'Send your OpenAI API key (starts with `sk-`).\n\nGet one at: https://platform.openai.com/api-keys';
+                await ctx.editMessageText(hint);
+            }
+        });
+        // Onboarding: model selection
+        this.bot.action(/^onboard_model:(.+)$/, async (ctx) => {
+            await ctx.answerCbQuery();
+            if (!this.onboardingState)
+                return;
+            const model = ctx.match[1];
+            this.onboardingState.model = model;
+            this.onboardingState.step = 'testing';
+            await ctx.editMessageText('Testing connection...');
+            await this.finishOnboarding(ctx);
         });
         // Back to settings
         this.bot.action('settings:back', async (ctx) => {
@@ -220,12 +328,31 @@ export class TelegramBot {
     registerHandlers() {
         this.bot.on('voice', (ctx) => {
             this.captureChatId(ctx.chat.id);
+            if (!this.assistant) {
+                ctx.reply('AI is not configured yet. Send /start to set up.').catch(() => { });
+                return;
+            }
             this.handleVoice(ctx).catch((err) => console.error('Voice handler error:', err));
         });
         this.bot.on('text', (ctx) => {
             const chatId = ctx.chat.id;
             this.captureChatId(chatId);
             const text = ctx.message.text;
+            // Onboarding: route text input to onboarding handler
+            if (this.onboardingState) {
+                this.handleOnboardingText(ctx, text).catch((err) => console.error('Onboarding text error:', err));
+                return;
+            }
+            // Check if we're awaiting threshold input
+            if (this.awaitingThresholdInput.has(chatId)) {
+                this.handleThresholdInput(ctx, text).catch((err) => console.error('Threshold input error:', err));
+                return;
+            }
+            // No assistant yet (should not happen after onboarding, but guard)
+            if (!this.assistant) {
+                ctx.reply('AI is not configured. Send /start to set up.').catch(() => { });
+                return;
+            }
             // Detect language from user's message and track it
             const detected = detectLanguage(text);
             if (detected) {
@@ -245,6 +372,31 @@ export class TelegramBot {
             this.configManager.setChatId(chatId);
             console.log(`Chat ID captured: ${chatId}`);
         }
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async handleThresholdInput(ctx, text) {
+        const chatId = ctx.chat.id;
+        const resource = this.awaitingThresholdInput.get(chatId);
+        if (!resource)
+            return;
+        // Check for cancel
+        if (text === '/cancel') {
+            this.awaitingThresholdInput.delete(chatId);
+            await ctx.reply('❌ Cancelled. Threshold not changed.');
+            return;
+        }
+        // Parse number
+        const value = parseInt(text.trim(), 10);
+        if (isNaN(value) || value < 1 || value > 100) {
+            await ctx.reply('❌ Invalid number. Please send a number between 1 and 100.\n\n'
+                + 'Send /cancel to cancel.');
+            return;
+        }
+        // Update threshold
+        const keyMap = { cpu: 'cpuPercent', ram: 'ramPercent', disk: 'diskPercent' };
+        this.configManager.updateThreshold(keyMap[resource], value);
+        this.awaitingThresholdInput.delete(chatId);
+        await ctx.reply(`✅ ${resource.toUpperCase()} alert threshold set to ${value}%`);
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async handleVoice(ctx) {
@@ -287,6 +439,121 @@ export class TelegramBot {
         }
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async sendOnboardingWelcome(ctx) {
+        this.onboardingState = { step: 'provider' };
+        await ctx.reply('Welcome to Zaruka! Let\'s set up your AI provider.\n\n'
+            + 'Choose your AI provider:', Markup.inlineKeyboard([
+            [Markup.button.callback('Anthropic (Claude)', 'onboard:anthropic')],
+            [Markup.button.callback('OpenAI (GPT)', 'onboard:openai')],
+            [Markup.button.callback('Self-hosted (Ollama, etc.)', 'onboard:openai-compatible')],
+        ]));
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async handleOnboardingText(ctx, text) {
+        if (!this.onboardingState)
+            return;
+        const state = this.onboardingState;
+        switch (state.step) {
+            case 'provider': {
+                // User sent text instead of clicking a button
+                await this.sendOnboardingWelcome(ctx);
+                break;
+            }
+            case 'base_url': {
+                // Self-hosted: receive base URL
+                state.baseUrl = text.trim();
+                state.step = 'api_key';
+                await ctx.reply('Send your API key, or send `-` to skip (if your endpoint has no auth).');
+                break;
+            }
+            case 'api_key': {
+                // Receive API key
+                state.apiKey = text.trim() === '-' ? undefined : text.trim();
+                state.step = 'model';
+                await this.sendModelSelection(ctx);
+                break;
+            }
+            case 'model': {
+                // Free-text model name (for self-hosted)
+                state.model = text.trim();
+                state.step = 'testing';
+                await ctx.reply('Testing connection...');
+                await this.finishOnboarding(ctx);
+                break;
+            }
+            default:
+                break;
+        }
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async sendModelSelection(ctx) {
+        const state = this.onboardingState;
+        if (!state)
+            return;
+        if (state.provider === 'anthropic') {
+            await ctx.reply('Choose a model:', Markup.inlineKeyboard([
+                [Markup.button.callback('Claude Sonnet 4.5 (recommended)', 'onboard_model:claude-sonnet-4-5-20250929')],
+                [Markup.button.callback('Claude Haiku 4.5 (fast & cheap)', 'onboard_model:claude-haiku-4-5-20251001')],
+                [Markup.button.callback('Claude Opus 4.6 (most powerful)', 'onboard_model:claude-opus-4-6')],
+            ]));
+        }
+        else if (state.provider === 'openai') {
+            await ctx.reply('Choose a model:', Markup.inlineKeyboard([
+                [Markup.button.callback('GPT-4o (recommended)', 'onboard_model:gpt-4o')],
+                [Markup.button.callback('GPT-4o mini (fast & cheap)', 'onboard_model:gpt-4o-mini')],
+            ]));
+        }
+        else {
+            // Self-hosted: ask for model name as text
+            await ctx.reply('Enter your model name (e.g. `llama3`, `mistral`, `qwen2`):');
+        }
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async finishOnboarding(ctx) {
+        const state = this.onboardingState;
+        if (!state || !state.provider || !state.model)
+            return;
+        const aiConfig = {
+            provider: state.provider,
+            apiKey: state.apiKey,
+            model: state.model,
+            baseUrl: state.baseUrl ?? null,
+        };
+        // Test connection
+        const result = await testAiConnection(aiConfig);
+        if (!result.ok) {
+            // Reset to let user retry
+            this.onboardingState = { step: 'provider' };
+            await ctx.reply('Connection failed: ' + (result.error || 'Unknown error') + '\n\n'
+                + 'Please try again.', Markup.inlineKeyboard([
+                [Markup.button.callback('Retry setup', 'onboard:retry')],
+            ]));
+            // Register the retry button handler inline
+            this.bot.action('onboard:retry', async (retryCtx) => {
+                await retryCtx.answerCbQuery();
+                await this.sendOnboardingWelcome(retryCtx);
+            });
+            return;
+        }
+        // Save config
+        this.configManager.updateAiConfig(aiConfig);
+        // Call the setup complete callback to build the assistant
+        if (this.onSetupComplete) {
+            try {
+                await this.onSetupComplete();
+            }
+            catch (err) {
+                console.error('Failed to initialize assistant after onboarding:', err);
+                await ctx.reply('Setup saved but failed to initialize. Please restart the bot.');
+                return;
+            }
+        }
+        await ctx.reply('Setup complete! Your AI provider is configured.\n\n'
+            + `Provider: ${aiConfig.provider}\n`
+            + `Model: ${aiConfig.model}\n\n`
+            + 'Send me any message and I\'ll help you!');
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async processAndReply(ctx, userMessage) {
         const chatId = ctx.chat.id;
         // Load recent conversation history from DB (last 20 messages for context window)
@@ -317,7 +584,34 @@ export class TelegramBot {
         catch (err) {
             clearInterval(typingInterval);
             console.error('Error processing message:', err);
-            await ctx.reply('Sorry, something went wrong. Please try again.');
+            // Check for rate limit / quota errors
+            const errorMsg = err instanceof Error ? err.message : String(err);
+            const isRateLimit = errorMsg.includes('rate_limit')
+                || errorMsg.includes('quota')
+                || errorMsg.includes('limit exceeded')
+                || errorMsg.includes('429');
+            if (isRateLimit) {
+                const config = this.configManager.getConfig();
+                const isOAuth = !!(config.ai?.authToken);
+                if (isOAuth) {
+                    await ctx.reply('⚠️ Reached Claude usage limits\n\n'
+                        + 'Your Claude subscription limits have been exceeded.\n\n'
+                        + '📊 Check usage: https://claude.ai/settings/usage\n'
+                        + '💡 Limits reset daily/weekly depending on your plan.\n\n'
+                        + 'Try again later or upgrade your plan.');
+                }
+                else {
+                    await ctx.reply('⚠️ API Rate Limit Exceeded\n\n'
+                        + 'Your API rate limit has been reached.\n\n'
+                        + '📊 Check usage: https://console.anthropic.com/settings/usage\n'
+                        + '💳 Check plan: https://console.anthropic.com/settings/billing\n\n'
+                        + 'Wait a few minutes or upgrade your plan.');
+                }
+            }
+            else {
+                await ctx.reply('❌ Error processing your message.\n\n'
+                    + 'Please try again. If the problem persists, check /settings or contact support.');
+            }
         }
     }
     splitMessage(text, maxLength) {

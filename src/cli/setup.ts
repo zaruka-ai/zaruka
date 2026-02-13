@@ -60,7 +60,7 @@ export async function runSetup(): Promise<void> {
     ],
   });
 
-  let provider: ZarukaConfig['ai']['provider'];
+  let provider: NonNullable<ZarukaConfig['ai']>['provider'];
   let apiKey = '';
   let authToken = '';
   let model = '';

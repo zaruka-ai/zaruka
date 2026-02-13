@@ -65,6 +65,8 @@ export class AgentSdkRunner {
                 permissionMode: 'bypassPermissions',
                 allowDangerouslySkipPermissions: true,
                 env: cleanEnv,
+                debug: true,
+                debugFile: '/tmp/zaruka-agent-debug.log',
             },
         });
         for await (const msg of conversation) {

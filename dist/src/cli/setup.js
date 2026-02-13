@@ -1,5 +1,5 @@
 import { input, select, confirm } from '@inquirer/prompts';
-import { writeFileSync, mkdirSync, chmodSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { join } from 'node:path';
 import { homedir, platform } from 'node:os';
@@ -45,17 +45,262 @@ export async function runSetup() {
     const providerChoice = await select({
         message: 'Which AI provider would you like to use?',
         choices: [
-            { name: 'Anthropic Claude (recommended)', value: 'anthropic' },
-            { name: 'OpenAI (GPT-4)', value: 'openai' },
+            { name: 'Anthropic Claude via Claude Code (subscription/OAuth)', value: 'anthropic-oauth' },
+            { name: 'Anthropic Claude via API Key (pay-as-you-go)', value: 'anthropic-api' },
+            { name: 'OpenAI via Codex CLI (ChatGPT Plus/Pro subscription)', value: 'openai-oauth' },
+            { name: 'OpenAI via API Key (pay-as-you-go)', value: 'openai-api' },
             { name: 'Free local Llama via Ollama (no API key)', value: 'ollama' },
             { name: 'Other OpenAI-compatible API', value: 'openai-compatible' },
         ],
     });
     let provider;
     let apiKey = '';
+    let authToken = '';
     let model = '';
     let baseUrl = null;
-    if (providerChoice === 'ollama') {
+    if (providerChoice === 'anthropic-oauth') {
+        provider = 'anthropic';
+        console.log('\n  Claude Code OAuth Setup');
+        console.log('  ' + '─'.repeat(23));
+        console.log('  This uses your Claude Pro subscription (no additional API costs).\n');
+        const authMethod = await select({
+            message: 'Choose authentication method:',
+            choices: [
+                { name: 'Browser OAuth (recommended)', value: 'browser' },
+                { name: 'Manual token entry (for SSH/headless)', value: 'manual' },
+            ],
+        });
+        if (authMethod === 'browser') {
+            console.log('\n  Starting OAuth flow...\n');
+            console.log('  Run this command in your terminal:\n');
+            console.log('    claude code setup --use-oauth\n');
+            console.log('  Follow the link in your browser to authorize.\n');
+            console.log('  After authorization, find your token in ~/.anthropic/\n');
+            const continueSetup = await confirm({
+                message: 'Have you completed the OAuth setup?',
+                default: false,
+            });
+            if (continueSetup) {
+                console.log('\n  Looking for OAuth token...\n');
+                try {
+                    const anthropicDir = join(homedir(), '.anthropic');
+                    // Try to read token from Claude Code CLI config
+                    const authFiles = ['auth.json', 'session.json', 'oauth.json'];
+                    let foundToken = '';
+                    for (const file of authFiles) {
+                        const path = join(anthropicDir, file);
+                        if (existsSync(path)) {
+                            try {
+                                const data = JSON.parse(readFileSync(path, 'utf-8'));
+                                if (data.token || data.access_token || data.authToken) {
+                                    foundToken = data.token || data.access_token || data.authToken;
+                                    break;
+                                }
+                            }
+                            catch { /* skip */ }
+                        }
+                    }
+                    if (foundToken) {
+                        authToken = foundToken;
+                        console.log('  ✓ OAuth token found automatically!\n');
+                    }
+                    else {
+                        console.log('  ⚠ Token not found. Please enter manually:\n');
+                        authToken = await input({
+                            message: 'OAuth Token:',
+                            validate: (val) => {
+                                if (val.trim().length === 0)
+                                    return 'Token is required';
+                                if (!val.startsWith('sk-ant-oat01-'))
+                                    return 'Invalid OAuth token format';
+                                return true;
+                            },
+                        });
+                    }
+                }
+                catch {
+                    console.log('  ⚠ Could not read token automatically. Please enter manually:\n');
+                    authToken = await input({
+                        message: 'OAuth Token:',
+                        validate: (val) => {
+                            if (val.trim().length === 0)
+                                return 'Token is required';
+                            if (!val.startsWith('sk-ant-oat01-'))
+                                return 'Invalid OAuth token format';
+                            return true;
+                        },
+                    });
+                }
+            }
+            else {
+                console.log('\n  Please complete OAuth setup and run "npm run setup" again.\n');
+                process.exit(0);
+            }
+        }
+        else {
+            // Manual token entry
+            console.log('\n  To get your OAuth token:');
+            console.log('  1. Visit: https://claude.ai/settings/oauth-setup');
+            console.log('  2. Click "Generate Setup Token"');
+            console.log('  3. Copy the token (starts with sk-ant-oat01-...)\n');
+            authToken = await input({
+                message: 'OAuth Setup Token:',
+                validate: (val) => {
+                    if (val.trim().length === 0)
+                        return 'Token is required';
+                    if (!val.startsWith('sk-ant-oat01-'))
+                        return 'Invalid OAuth token format (should start with sk-ant-oat01-)';
+                    return true;
+                },
+            });
+        }
+        model = await input({
+            message: 'Model:',
+            default: 'claude-opus-4-6',
+        });
+        console.log('  ✓ OAuth token saved\n');
+    }
+    else if (providerChoice === 'anthropic-api') {
+        provider = 'anthropic';
+        console.log('\n  3/5 API Key');
+        console.log('  ' + '─'.repeat(11));
+        console.log('  Get your API key at: https://console.anthropic.com/settings/keys\n');
+        apiKey = await input({
+            message: 'API Key:',
+            validate: (val) => {
+                if (val.trim().length === 0)
+                    return 'API key is required';
+                if (!val.startsWith('sk-ant-api03-'))
+                    return 'Invalid API key format (should start with sk-ant-api03-)';
+                return true;
+            },
+        });
+        model = await input({
+            message: 'Model:',
+            default: 'claude-opus-4-6',
+        });
+        console.log('  ✓ Key saved\n');
+    }
+    else if (providerChoice === 'openai-oauth') {
+        provider = 'openai';
+        console.log('\n  OpenAI Codex OAuth Setup');
+        console.log('  ' + '─'.repeat(24));
+        console.log('  This uses your ChatGPT Plus/Pro subscription (no additional API costs).\n');
+        const authMethod = await select({
+            message: 'Choose authentication method:',
+            choices: [
+                { name: 'Browser OAuth (recommended)', value: 'browser' },
+                { name: 'Device Code (for SSH/headless)', value: 'device' },
+                { name: 'Manual token entry', value: 'manual' },
+            ],
+        });
+        if (authMethod === 'browser') {
+            console.log('\n  Starting OAuth flow...\n');
+            console.log('  First, install Codex CLI (if not already installed):\n');
+            console.log('    npm install -g @openai/codex-cli\n');
+            console.log('  Then run:\n');
+            console.log('    codex logout   # if previously used API key');
+            console.log('    codex login    # start OAuth flow\n');
+            console.log('  Follow the link in your browser to authorize.\n');
+            const continueSetup = await confirm({
+                message: 'Have you completed the OAuth setup?',
+                default: false,
+            });
+            if (continueSetup) {
+                console.log('\n  Looking for session token...\n');
+                try {
+                    const openaiDir = join(homedir(), '.openai');
+                    const sessionPath = join(openaiDir, 'session.json');
+                    if (existsSync(sessionPath)) {
+                        const data = JSON.parse(readFileSync(sessionPath, 'utf-8'));
+                        if (data.access_token || data.token || data.session_token) {
+                            authToken = data.access_token || data.token || data.session_token;
+                            console.log('  ✓ Session token found automatically!\n');
+                        }
+                        else {
+                            console.log('  ⚠ Token not found in session.json. Please enter manually:\n');
+                            authToken = await input({
+                                message: 'Session Token:',
+                                validate: (val) => val.trim().length > 0 || 'Token is required',
+                            });
+                        }
+                    }
+                    else {
+                        console.log('  ⚠ ~/.openai/session.json not found. Please enter token manually:\n');
+                        authToken = await input({
+                            message: 'Session Token:',
+                            validate: (val) => val.trim().length > 0 || 'Token is required',
+                        });
+                    }
+                }
+                catch {
+                    console.log('  ⚠ Could not read token automatically. Please enter manually:\n');
+                    authToken = await input({
+                        message: 'Session Token:',
+                        validate: (val) => val.trim().length > 0 || 'Token is required',
+                    });
+                }
+            }
+            else {
+                console.log('\n  Please complete OAuth setup and run "npm run setup" again.\n');
+                process.exit(0);
+            }
+        }
+        else if (authMethod === 'device') {
+            console.log('\n  Device Code Flow (for headless/SSH environments)\n');
+            console.log('  This method works without browser access on the same machine.\n');
+            console.log('  Install device auth plugin:\n');
+            console.log('    npm install -g @openai/codex-device-auth\n');
+            console.log('  Then run:\n');
+            console.log('    codex-device-auth\n');
+            console.log('  You\'ll get a code to enter at a URL from any device with a browser.\n');
+            const continueSetup = await confirm({
+                message: 'Have you completed the device authorization?',
+                default: false,
+            });
+            if (continueSetup) {
+                authToken = await input({
+                    message: 'Session Token (from ~/.openai/session.json):',
+                    validate: (val) => val.trim().length > 0 || 'Token is required',
+                });
+            }
+            else {
+                console.log('\n  Please complete device authorization and run "npm run setup" again.\n');
+                process.exit(0);
+            }
+        }
+        else {
+            // Manual token entry
+            console.log('\n  Manual Token Entry\n');
+            console.log('  If you already have a session token, paste it here.\n');
+            console.log('  You can find it in ~/.openai/session.json after running "codex login"\n');
+            authToken = await input({
+                message: 'Session Token:',
+                validate: (val) => val.trim().length > 0 || 'Token is required',
+            });
+        }
+        model = await input({
+            message: 'Model:',
+            default: 'gpt-4o',
+        });
+        console.log('  ✓ Session token saved\n');
+    }
+    else if (providerChoice === 'openai-api') {
+        provider = 'openai';
+        console.log('\n  3/5 API Key');
+        console.log('  ' + '─'.repeat(11));
+        console.log('  Get your API key at: https://platform.openai.com/api-keys\n');
+        apiKey = await input({
+            message: 'API Key:',
+            validate: (val) => val.trim().length > 0 || 'API key is required',
+        });
+        model = await input({
+            message: 'Model:',
+            default: 'gpt-4o',
+        });
+        console.log('  ✓ Key saved\n');
+    }
+    else if (providerChoice === 'ollama') {
         provider = 'openai-compatible';
         await setupOllama();
         model = await input({
@@ -90,40 +335,24 @@ export async function runSetup() {
         baseUrl = 'http://localhost:11434/v1';
     }
     else {
-        provider = providerChoice;
-        // Step 3: API Key & model
-        console.log('\n  3/5 API Key');
-        console.log('  ' + '─'.repeat(11));
-        let apiKeyHint = '';
-        let defaultModel = '';
-        if (provider === 'anthropic') {
-            apiKeyHint = 'Get your key at console.anthropic.com';
-            defaultModel = 'claude-opus-4-6';
-        }
-        else if (provider === 'openai') {
-            apiKeyHint = 'Get your key at platform.openai.com';
-            defaultModel = 'gpt-4o';
-        }
-        else {
-            apiKeyHint = 'Enter the API key for your provider';
-            defaultModel = 'llama3';
-        }
-        console.log(`  ${apiKeyHint}\n`);
+        // openai-compatible
+        provider = 'openai-compatible';
+        console.log('\n  3/5 API Key & Base URL');
+        console.log('  ' + '─'.repeat(23));
+        console.log('  Enter the API key and base URL for your OpenAI-compatible provider.\n');
         apiKey = await input({
             message: 'API Key:',
             validate: (val) => val.trim().length > 0 || 'API key is required',
         });
         model = await input({
             message: 'Model:',
-            default: defaultModel,
+            default: 'llama3',
         });
-        if (provider === 'openai-compatible') {
-            baseUrl = await input({
-                message: 'Base URL:',
-                default: 'http://localhost:11434/v1',
-            });
-        }
-        console.log('  ✓ Key saved\n');
+        baseUrl = await input({
+            message: 'Base URL:',
+            default: 'http://localhost:11434/v1',
+        });
+        console.log('  ✓ Config saved\n');
     }
     // Step 4: Timezone
     console.log('  4/5 Timezone');
@@ -171,7 +400,8 @@ export async function runSetup() {
         telegram: { botToken: botToken.trim() },
         ai: {
             provider,
-            apiKey: apiKey.trim(),
+            ...(apiKey ? { apiKey: apiKey.trim() } : {}),
+            ...(authToken ? { authToken: authToken.trim() } : {}),
             model: model.trim(),
             baseUrl,
         },
@@ -186,9 +416,8 @@ export async function runSetup() {
     writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
     chmodSync(CONFIG_PATH, 0o600);
     console.log('  Setup complete!\n');
-    console.log('  Start:  zaruka start');
-    console.log('  Status: zaruka status');
-    console.log('  Help:   zaruka help\n');
+    console.log('  Start:  npm run dev');
+    console.log('  Or:     npm start (production)\n');
 }
 async function setupOllama() {
     if (isCommandAvailable('ollama')) {

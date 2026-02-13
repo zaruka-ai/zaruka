@@ -11,14 +11,23 @@ export declare class TelegramBot {
     private usageRepo;
     private transcribe;
     private transcriberFactory;
+    private onSetupComplete?;
+    private onboardingState;
     private lastLanguage;
-    constructor(token: string, assistant: Assistant, messageRepo: MessageRepository, configManager: ConfigManager, usageRepo: UsageRepository, transcribe?: Transcriber, transcriberFactory?: () => Promise<Transcriber | undefined>);
+    private awaitingThresholdInput;
+    constructor(token: string, assistant: Assistant | null, messageRepo: MessageRepository, configManager: ConfigManager, usageRepo: UsageRepository, transcribe?: Transcriber, transcriberFactory?: () => Promise<Transcriber | undefined>, onSetupComplete?: () => Promise<void>);
+    setAssistant(assistant: Assistant): void;
     private registerCommands;
     private sendSettingsMenu;
     private registerCallbacks;
     private registerHandlers;
     private captureChatId;
+    private handleThresholdInput;
     private handleVoice;
+    private sendOnboardingWelcome;
+    private handleOnboardingText;
+    private sendModelSelection;
+    private finishOnboarding;
     private processAndReply;
     private splitMessage;
     /**
