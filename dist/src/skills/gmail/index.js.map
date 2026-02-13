@@ -1,0 +1,1 @@
+{"version":3,"file":"index.js","sourceRoot":"","sources":["../../../../src/skills/gmail/index.ts"],"names":[],"mappings":"AAEA,oCAAoC;AACpC,MAAM,OAAO,UAAU;IACrB,IAAI,GAAG,OAAO,CAAC;IACf,WAAW,GAAG,2CAA2C,CAAC;IAC1D,KAAK,GAAqB,EAAE,CAAC;IAE7B,KAAK,CAAC,OAAO,CAAC,SAAiB,EAAE,OAAgC;QAC/D,OAAO,IAAI,CAAC,SAAS,CAAC,EAAE,KAAK,EAAE,oCAAoC,EAAE,CAAC,CAAC;IACzE,CAAC;CACF"}

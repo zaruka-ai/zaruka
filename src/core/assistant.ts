@@ -1,26 +1,45 @@
 import type { LLMProvider, Message } from './types.js';
 import type { SkillRegistry } from './skill-registry.js';
+import type { AgentSdkRunner, ChatMessage } from '../providers/anthropic.js';
 
 const MAX_TOOL_ROUNDS = 10;
 
 export class Assistant {
-  private provider: LLMProvider;
-  private registry: SkillRegistry;
+  private provider: LLMProvider | null;
+  private registry: SkillRegistry | null;
+  private sdkRunner: AgentSdkRunner | null;
   private systemPrompt: string;
 
-  constructor(provider: LLMProvider, registry: SkillRegistry, timezone: string) {
-    this.provider = provider;
-    this.registry = registry;
+  constructor(opts: {
+    provider?: LLMProvider;
+    registry?: SkillRegistry;
+    sdkRunner?: AgentSdkRunner;
+    timezone: string;
+  }) {
+    this.provider = opts.provider ?? null;
+    this.registry = opts.registry ?? null;
+    this.sdkRunner = opts.sdkRunner ?? null;
     this.systemPrompt = [
-      'You are Zaruka, a helpful personal AI assistant.',
-      'You help the user manage tasks, check weather, and more.',
-      `User timezone: ${timezone}. Current time: ${new Date().toLocaleString('en-US', { timeZone: timezone })}.`,
-      'Be concise and friendly. Use the available tools when the user asks to create, list, complete, or delete tasks, check weather, etc.',
+      'You are Zaruka, a self-evolving personal AI assistant.',
+      `User timezone: ${opts.timezone}. Current time: ${new Date().toLocaleString('en-US', { timeZone: opts.timezone })}.`,
+      'Be concise and friendly. Respond in the same language the user writes in.',
+      'Use the available tools for tasks, weather, etc.',
       'When creating tasks with due dates, parse natural language dates relative to the current date.',
+      'If the user asks for something you cannot do with existing tools, try to find a creative solution or suggest alternatives.',
     ].join('\n');
   }
 
-  async process(userMessage: string): Promise<string> {
+  async process(userMessage: string, history?: ChatMessage[]): Promise<string> {
+    // Anthropic path: delegate to AgentSdkRunner (handles tool loop internally)
+    if (this.sdkRunner) {
+      return this.sdkRunner.process(userMessage, history);
+    }
+
+    // OpenAI path: manual tool loop via SkillRegistry
+    if (!this.provider || !this.registry) {
+      return 'Assistant is not configured.';
+    }
+
     const messages: Message[] = [
       { role: 'system', content: this.systemPrompt },
       { role: 'user', content: userMessage },
@@ -35,20 +54,18 @@ export class Assistant {
         return response.text ?? '';
       }
 
-      // Execute all tool calls and collect results
       const toolResults: string[] = [];
       for (const call of response.toolCalls) {
         const result = await this.registry.executeTool(call.name, call.params);
         toolResults.push(`[${call.name}]: ${result}`);
       }
 
-      // Add assistant message with tool calls and tool results
       if (response.text) {
         messages.push({ role: 'assistant', content: response.text });
       }
       messages.push({
         role: 'assistant',
-        content: `Tool calls: ${response.toolCalls.map(c => c.name).join(', ')}`,
+        content: `Tool calls: ${response.toolCalls.map((c) => c.name).join(', ')}`,
       });
       messages.push({
         role: 'user',

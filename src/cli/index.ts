@@ -1,17 +1,32 @@
 import { Command } from 'commander';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const pkg = JSON.parse(readFileSync(join(__dirname, '../../../package.json'), 'utf-8'));
+// Walk up from this file to find package.json (works for both src/ and dist/)
+function findPackageVersion(): string {
+  let dir = dirname(fileURLToPath(import.meta.url));
+  while (dir !== dirname(dir)) {
+    const candidate = join(dir, 'package.json');
+    if (existsSync(candidate)) {
+      try {
+        const p = JSON.parse(readFileSync(candidate, 'utf-8'));
+        if (p.name === 'zaruka') return p.version;
+      } catch { /* skip */ }
+    }
+    dir = dirname(dir);
+  }
+  return '0.0.0';
+}
+
+const version = findPackageVersion();
 
 const program = new Command();
 
 program
   .name('zaruka')
   .description('Zaruka — your self-hosted AI assistant')
-  .version(pkg.version);
+  .version(version);
 
 program
   .command('setup')

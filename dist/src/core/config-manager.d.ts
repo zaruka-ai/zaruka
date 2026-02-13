@@ -1,0 +1,18 @@
+import type { ZarukaConfig, ResourceThresholds } from './types.js';
+export declare class ConfigManager {
+    private config;
+    constructor(initial: ZarukaConfig);
+    getConfig(): ZarukaConfig;
+    getChatId(): number | undefined;
+    setChatId(chatId: number): void;
+    getModel(): string;
+    updateModel(model: string): void;
+    getLanguage(): string;
+    updateLanguage(language: string): void;
+    getThresholds(): ResourceThresholds;
+    updateThreshold(key: keyof ResourceThresholds, value: number): void;
+    isResourceMonitorEnabled(): boolean;
+    getResourceCron(): string;
+    private save;
+}
+//# sourceMappingURL=config-manager.d.ts.map

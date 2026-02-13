@@ -19,6 +19,10 @@ export interface ToolCall {
 export interface LLMResponse {
   text?: string;
   toolCalls?: ToolCall[];
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+  };
 }
 
 export interface LLMProvider {
@@ -50,11 +54,34 @@ export interface Task {
   updated_at: string;
 }
 
+// === Resource Monitoring ===
+
+export interface ResourceThresholds {
+  cpuPercent: number;    // default 90
+  ramPercent: number;    // default 85
+  diskPercent: number;   // default 90
+}
+
+export interface ResourceSnapshot {
+  cpu: { usagePercent: number; cores: number; model: string };
+  ram: {
+    totalGB: number;
+    usedGB: number;
+    freeGB: number;
+    usagePercent: number;
+    swap: { totalGB: number; usedGB: number; freeGB: number } | null;
+    effectiveUsagePercent: number;
+  };
+  disk: { totalGB: number; usedGB: number; freeGB: number; usagePercent: number; mount: string };
+  timestamp: string;
+}
+
 // === Config ===
 
 export interface ZarukaConfig {
   telegram: {
     botToken: string;
+    chatId?: number;
   };
   ai: {
     provider: 'anthropic' | 'openai' | 'openai-compatible';
@@ -64,5 +91,11 @@ export interface ZarukaConfig {
     baseUrl: string | null;
   };
   timezone: string;
+  language?: string;
   reminderCron: string;
+  resourceMonitor?: {
+    enabled: boolean;
+    cronExpression: string;
+    thresholds: ResourceThresholds;
+  };
 }

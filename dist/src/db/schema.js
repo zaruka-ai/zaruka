@@ -1,0 +1,54 @@
+import Database from 'better-sqlite3';
+import { existsSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
+const ZARUKA_DIR = process.env.ZARUKA_DATA_DIR || join(homedir(), '.zaruka');
+const DB_PATH = join(ZARUKA_DIR, 'data.db');
+export function getDb() {
+    if (!existsSync(ZARUKA_DIR)) {
+        mkdirSync(ZARUKA_DIR, { recursive: true });
+    }
+    const db = new Database(DB_PATH);
+    db.pragma('journal_mode = WAL');
+    db.pragma('foreign_keys = ON');
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS tasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      description TEXT,
+      due_date TEXT,
+      status TEXT DEFAULT 'active',
+      source TEXT DEFAULT 'manual',
+      source_ref TEXT,
+      reminder_days INTEGER DEFAULT 1,
+      notified_at TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id INTEGER NOT NULL,
+      role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+      text TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS api_usage (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      date TEXT NOT NULL,
+      model TEXT NOT NULL,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cost_usd REAL NOT NULL DEFAULT 0,
+      requests INTEGER NOT NULL DEFAULT 0,
+      UNIQUE(date, model)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_api_usage_date ON api_usage(date);
+  `);
+    return db;
+}
+//# sourceMappingURL=schema.js.map
