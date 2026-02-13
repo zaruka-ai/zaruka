@@ -9,6 +9,13 @@ export class TelegramBot {
     this.bot = new Telegraf(token);
     this.assistant = assistant;
 
+    this.bot.command('start', async (ctx) => {
+      await ctx.reply(
+        'Hi! I\'m Zaruka, your personal AI assistant.\n\n'
+        + 'Just send me a message and I\'ll help you with tasks, weather, and more.',
+      );
+    });
+
     this.bot.on('text', async (ctx) => {
       const userMessage = ctx.message.text;
       try {

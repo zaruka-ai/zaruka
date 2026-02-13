@@ -48,38 +48,33 @@ export async function runDoctor(): Promise<void> {
 
   // 4. Check AI provider
   const provider = config.ai?.provider;
-  const apiKey = config.ai?.apiKey;
-  if (provider && apiKey) {
+  if (provider) {
     console.log(`  ✓ AI provider: ${provider} (${config.ai?.model})`);
 
     if (provider === 'anthropic') {
       try {
-        const res = await fetch('https://api.anthropic.com/v1/messages', {
-          method: 'POST',
-          headers: {
-            'x-api-key': apiKey,
-            'anthropic-version': '2023-06-01',
-            'content-type': 'application/json',
-          },
-          body: JSON.stringify({
-            model: config.ai.model,
-            max_tokens: 1,
-            messages: [{ role: 'user', content: 'hi' }],
-          }),
+        const { query } = await import('@anthropic-ai/claude-agent-sdk');
+        const conversation = query({
+          prompt: 'Reply with OK',
+          options: { model: config.ai.model, maxTurns: 1 },
         });
-        if (res.ok || res.status === 400) {
-          // 400 can mean model issues but key is valid
-          console.log('  ✓ Anthropic API key is valid');
-        } else if (res.status === 401) {
-          console.log('  ✗ Anthropic API key is invalid');
-          allOk = false;
-        } else {
-          console.log(`  ⚠ Anthropic API returned ${res.status}`);
+        let got = false;
+        for await (const msg of conversation) {
+          if (msg.type === 'result') got = true;
         }
-      } catch {
-        console.log('  ✗ Cannot reach Anthropic API');
+        if (got) {
+          console.log('  ✓ Claude Agent SDK is working');
+        } else {
+          console.log('  ✗ Claude Agent SDK: no response');
+          allOk = false;
+        }
+      } catch (e) {
+        console.log(`  ✗ Claude Agent SDK error: ${e instanceof Error ? e.message : e}`);
         allOk = false;
       }
+    } else if (!config.ai?.apiKey) {
+      console.log('  ✗ API key not configured');
+      allOk = false;
     }
   } else {
     console.log('  ✗ AI provider not configured');

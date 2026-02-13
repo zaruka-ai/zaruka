@@ -58,7 +58,8 @@ export interface ZarukaConfig {
   };
   ai: {
     provider: 'anthropic' | 'openai' | 'openai-compatible';
-    apiKey: string;
+    apiKey?: string;
+    authToken?: string;
     model: string;
     baseUrl: string | null;
   };

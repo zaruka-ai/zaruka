@@ -55,13 +55,13 @@ export async function runStart(): Promise<void> {
   let provider;
   switch (config.ai.provider) {
     case 'anthropic':
-      provider = new AnthropicProvider(config.ai.apiKey, config.ai.model);
+      provider = new AnthropicProvider(config.ai.model, config.ai.authToken);
       break;
     case 'openai':
-      provider = new OpenAIProvider(config.ai.apiKey, config.ai.model, config.ai.baseUrl);
+      provider = new OpenAIProvider(config.ai.apiKey!, config.ai.model, config.ai.baseUrl);
       break;
     case 'openai-compatible':
-      provider = new OpenAICompatibleProvider(config.ai.apiKey, config.ai.model, config.ai.baseUrl!);
+      provider = new OpenAICompatibleProvider(config.ai.apiKey!, config.ai.model, config.ai.baseUrl!);
       break;
     default:
       console.error(`Unknown provider: ${config.ai.provider}`);
