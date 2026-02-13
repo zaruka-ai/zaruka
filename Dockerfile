@@ -23,4 +23,4 @@ ENV ZARUKA_DATA_DIR=/data
 
 VOLUME ["/data"]
 
-CMD ["node", "dist/cli/index.js", "start"]
+CMD ["node", "dist/src/cli/index.js", "start"]
