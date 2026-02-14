@@ -5,6 +5,8 @@ export interface OAuthConfig {
     redirectUri: string;
     scopes: string;
     extraParams?: Record<string, string>;
+    /** If true, token endpoint expects JSON body instead of form-urlencoded. */
+    tokenJson?: boolean;
 }
 export interface PKCEChallenge {
     codeVerifier: string;

@@ -9,6 +9,8 @@ export interface OAuthConfig {
   redirectUri: string;
   scopes: string;
   extraParams?: Record<string, string>;
+  /** If true, token endpoint expects JSON body instead of form-urlencoded. */
+  tokenJson?: boolean;
 }
 
 export interface PKCEChallenge {
@@ -36,6 +38,7 @@ export const ANTHROPIC_OAUTH: OAuthConfig = {
   clientId: '9d1c250a-e61b-44d9-88ed-5944d1962f5e',
   redirectUri: 'https://console.anthropic.com/oauth/code/callback',
   scopes: 'user:inference user:profile',
+  tokenJson: true,
 };
 
 export const OPENAI_OAUTH: OAuthConfig = {
@@ -80,18 +83,17 @@ export async function exchangeCodeForTokens(
   code: string,
   codeVerifier: string,
 ): Promise<TokenResponse> {
-  const body = new URLSearchParams({
+  const payload = {
     grant_type: 'authorization_code',
     client_id: config.clientId,
     code,
     redirect_uri: config.redirectUri,
     code_verifier: codeVerifier,
-  });
+  };
 
   const res = await fetch(config.tokenUrl, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: body.toString(),
+    ...tokenRequestOptions(config, payload),
   });
 
   if (!res.ok) {
@@ -99,28 +101,22 @@ export async function exchangeCodeForTokens(
     throw new Error(`Token exchange failed (${res.status}): ${text}`);
   }
 
-  const data = await res.json() as Record<string, unknown>;
-  return {
-    accessToken: data.access_token as string,
-    refreshToken: data.refresh_token as string | undefined,
-    expiresIn: data.expires_in as number | undefined,
-  };
+  return parseTokenResponse(await res.json() as Record<string, unknown>);
 }
 
 export async function refreshAccessToken(
   config: OAuthConfig,
   refreshToken: string,
 ): Promise<TokenResponse> {
-  const body = new URLSearchParams({
+  const payload = {
     grant_type: 'refresh_token',
     client_id: config.clientId,
     refresh_token: refreshToken,
-  });
+  };
 
   const res = await fetch(config.tokenUrl, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: body.toString(),
+    ...tokenRequestOptions(config, payload),
   });
 
   if (!res.ok) {
@@ -128,7 +124,28 @@ export async function refreshAccessToken(
     throw new Error(`Token refresh failed (${res.status}): ${text}`);
   }
 
-  const data = await res.json() as Record<string, unknown>;
+  return parseTokenResponse(await res.json() as Record<string, unknown>);
+}
+
+// === Internal helpers ===
+
+function tokenRequestOptions(
+  config: OAuthConfig,
+  payload: Record<string, string>,
+): { headers: Record<string, string>; body: string } {
+  if (config.tokenJson) {
+    return {
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    };
+  }
+  return {
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(payload).toString(),
+  };
+}
+
+function parseTokenResponse(data: Record<string, unknown>): TokenResponse {
   return {
     accessToken: data.access_token as string,
     refreshToken: data.refresh_token as string | undefined,
@@ -150,7 +167,9 @@ export function extractAuthCode(input: string): string {
     // Not a URL — treat as raw code
   }
 
-  return trimmed;
+  // Strip URL fragment (#state) if present
+  const hashIdx = trimmed.indexOf('#');
+  return hashIdx !== -1 ? trimmed.slice(0, hashIdx) : trimmed;
 }
 
 // === OpenAI Device Code flow ===
