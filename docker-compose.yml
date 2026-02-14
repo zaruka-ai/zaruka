@@ -1,6 +1,6 @@
 services:
   zaruka:
-    build: .
+    image: ghcr.io/zaruka-ai/zaruka:latest
     container_name: zaruka
     restart: unless-stopped
     volumes:
