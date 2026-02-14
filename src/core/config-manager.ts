@@ -90,6 +90,25 @@ export class ConfigManager {
     return this.config.resourceMonitor?.cronExpression ?? '*/5 * * * *';
   }
 
+  updateAuthToken(authToken: string, refreshToken?: string, expiresAt?: string): void {
+    if (this.config.ai) {
+      this.config.ai.authToken = authToken;
+      if (refreshToken !== undefined) {
+        this.config.ai.refreshToken = refreshToken;
+      }
+      if (expiresAt !== undefined) {
+        this.config.ai.tokenExpiresAt = expiresAt;
+      }
+      this.save();
+    }
+  }
+
+  isTokenExpiringSoon(bufferMs = 300_000): boolean {
+    const expiresAt = this.config.ai?.tokenExpiresAt;
+    if (!expiresAt) return false;
+    return Date.now() + bufferMs >= new Date(expiresAt).getTime();
+  }
+
   private save(): void {
     if (!existsSync(ZARUKA_DIR)) {
       mkdirSync(ZARUKA_DIR, { recursive: true });

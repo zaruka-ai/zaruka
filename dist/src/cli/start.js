@@ -18,6 +18,7 @@ import { Scheduler } from '../scheduler/cron.js';
 import { createZarukaMcpServer } from '../mcp/zaruka-mcp-server.js';
 import { loadCredentials } from '../mcp/credential-tool.js';
 import { createTranscriber } from '../audio/transcribe.js';
+import { startTokenRefreshLoop } from '../auth/token-refresh.js';
 const ZARUKA_DIR = process.env.ZARUKA_DATA_DIR || join(homedir(), '.zaruka');
 const CONFIG_PATH = join(ZARUKA_DIR, 'config.json');
 const SKILLS_DIR = join(ZARUKA_DIR, 'skills');
@@ -149,10 +150,11 @@ function buildSystemPrompt(timezone, language) {
 export async function runStart() {
     // Unset CLAUDECODE to allow nested Claude Code sessions (for Agent SDK)
     delete process.env.CLAUDECODE;
+    // Load saved credentials first so ZARUKA_TELEGRAM_TOKEN from ~/.zaruka/.env
+    // is available in process.env when loadConfig() checks for it
+    loadCredentials();
     const config = loadConfig();
     const configManager = new ConfigManager(config);
-    // Load saved credentials from ~/.zaruka/.env
-    loadCredentials();
     // Init DB
     const db = getDb();
     const taskRepo = new TaskRepository(db);
@@ -225,6 +227,10 @@ export async function runStart() {
         const newAssistant = await buildAssistant();
         bot.setAssistant(newAssistant);
         console.log(`Provider: ${configManager.getConfig().ai.provider} (${configManager.getModel()})`);
+        if (configManager.getConfig().ai?.refreshToken) {
+            startTokenRefreshLoop(configManager);
+            console.log('OAuth token refresh loop started.');
+        }
     });
     // Get the real send function from the bot for alerts & reminders
     const notifyFn = bot.getSendMessageFn();
@@ -232,6 +238,10 @@ export async function runStart() {
     new Scheduler(taskRepo, configManager.getConfig().timezone, configManager.getConfig().reminderCron, notifyFn, configManager);
     if (hasAi) {
         console.log(`Provider: ${configManager.getConfig().ai.provider} (${configManager.getModel()})`);
+        if (config.ai?.refreshToken) {
+            startTokenRefreshLoop(configManager);
+            console.log('OAuth token refresh loop started.');
+        }
     }
     else {
         console.log('No AI provider configured. Onboarding will start in Telegram.');
