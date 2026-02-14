@@ -1,4 +1,4 @@
-FROM node:22-slim
+FROM node:22-slim AS builder
 
 WORKDIR /app
 
@@ -13,11 +13,17 @@ COPY src/ src/
 COPY bin/ bin/
 
 RUN npx tsc
-
-# Remove dev dependencies after build
 RUN npm prune --production --legacy-peer-deps
 
-# Data directory
+FROM node:22-slim
+
+WORKDIR /app
+
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/bin ./bin
+COPY --from=builder /app/package.json ./
+
 RUN mkdir -p /data
 ENV ZARUKA_DATA_DIR=/data
 
