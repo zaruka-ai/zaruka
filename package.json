@@ -1,7 +1,11 @@
 {
   "name": "zaruka",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Decentralized personal AI assistant — self-hosted, model-agnostic",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zaruka-ai/zaruka.git"
+  },
   "type": "module",
   "bin": {
     "zaruka": "./dist/bin/cli.js"
