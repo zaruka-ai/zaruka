@@ -8,6 +8,11 @@ import type { ConfigManager } from '../core/config-manager.js';
 import type { UsageRepository } from '../db/usage-repository.js';
 import type { ZarukaConfig } from '../core/types.js';
 import { getResourceSnapshot, formatResourceReport } from '../monitor/resources.js';
+import {
+  generatePKCE, buildAuthUrl, extractAuthCode, exchangeCodeForTokens,
+  requestDeviceCode, pollDeviceToken,
+  ANTHROPIC_OAUTH, OPENAI_OAUTH,
+} from '../auth/oauth.js';
 
 export type Transcriber = (fileUrl: string) => Promise<string>;
 
@@ -20,6 +25,12 @@ interface OnboardingState {
   baseUrl?: string;
   model?: string;
   isOAuth?: boolean;
+  codeVerifier?: string;
+  oauthState?: string;
+  refreshToken?: string;
+  tokenExpiresIn?: number;
+  deviceAuthId?: string;
+  deviceUserCode?: string;
 }
 
 async function testAiConnection(ai: NonNullable<ZarukaConfig['ai']>): Promise<{ ok: boolean; error?: string }> {
@@ -393,15 +404,34 @@ export class TelegramBot {
       } else {
         this.onboardingState.isOAuth = true;
         if (provider === 'anthropic') {
+          const pkce = generatePKCE();
+          this.onboardingState.codeVerifier = pkce.codeVerifier;
+          this.onboardingState.oauthState = pkce.state;
+          const authUrl = buildAuthUrl(ANTHROPIC_OAUTH, pkce);
           await ctx.editMessageText(
-            'Open the link below, click "Generate Setup Token", and send me the token:\n\n'
-            + 'https://claude.ai/settings/oauth-setup',
+            'Sign in with your Claude account:\n\n'
+            + authUrl + '\n\n'
+            + 'After signing in, copy the full URL from your browser and send it here.\n\n'
+            + 'Or paste a setup token (starts with sk-ant-oat01-).',
           );
         } else {
-          await ctx.editMessageText(
-            'Run `codex login` in your terminal, then find the token in `~/.openai/session.json` and send it here.\n\n'
-            + 'Or install device auth: `npm install -g @openai/codex-device-auth && codex-device-auth`',
-          );
+          try {
+            const { deviceAuthId, userCode } = await requestDeviceCode(OPENAI_OAUTH);
+            this.onboardingState.deviceAuthId = deviceAuthId;
+            this.onboardingState.deviceUserCode = userCode;
+            await ctx.editMessageText(
+              'Sign in with your ChatGPT account:\n\n'
+              + '1. Open: https://auth.openai.com/codex/device\n'
+              + `2. Enter code: ${userCode}\n\n`
+              + 'After signing in, send "done" here.\n\n'
+              + 'Or paste a session token if you have one.',
+            );
+          } catch (err) {
+            console.error('Device code request failed:', err);
+            await ctx.editMessageText(
+              'Could not start device authorization. Please paste your API key or session token directly.',
+            );
+          }
         }
       }
     });
@@ -618,8 +648,63 @@ export class TelegramBot {
         break;
       }
       case 'api_key': {
-        // Receive API key
-        state.apiKey = text.trim() === '-' ? undefined : text.trim();
+        const input = text.trim();
+
+        if (state.isOAuth && state.provider === 'anthropic') {
+          if (input.startsWith('sk-ant-oat01-')) {
+            // Direct setup token
+            state.apiKey = input;
+          } else {
+            // Extract auth code from callback URL and exchange for tokens
+            try {
+              const code = extractAuthCode(input);
+              const tokens = await exchangeCodeForTokens(
+                ANTHROPIC_OAUTH,
+                code,
+                state.codeVerifier!,
+              );
+              state.apiKey = tokens.accessToken;
+              state.refreshToken = tokens.refreshToken;
+              state.tokenExpiresIn = tokens.expiresIn;
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              await ctx.reply(
+                'Failed to exchange authorization code: ' + msg + '\n\n'
+                + 'Please try again — paste the full URL from your browser, or a setup token.',
+              );
+              return;
+            }
+          }
+        } else if (state.isOAuth && state.provider === 'openai') {
+          const lower = input.toLowerCase();
+          if (lower === 'done' || lower === '\u0433\u043e\u0442\u043e\u0432\u043e') {
+            // Poll for device token
+            if (!state.deviceAuthId) {
+              await ctx.reply('No device authorization in progress. Please start over with /start.');
+              return;
+            }
+            try {
+              await ctx.reply('Checking authorization...');
+              const tokens = await pollDeviceToken(OPENAI_OAUTH, state.deviceAuthId, 12, 5000);
+              state.apiKey = tokens.accessToken;
+              state.refreshToken = tokens.refreshToken;
+              state.tokenExpiresIn = tokens.expiresIn;
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              await ctx.reply(
+                'Device authorization failed: ' + msg + '\n\n'
+                + 'Please try again or paste a session token directly.',
+              );
+              return;
+            }
+          } else {
+            // Treat as direct token
+            state.apiKey = input;
+          }
+        } else {
+          state.apiKey = input === '-' ? undefined : input;
+        }
+
         state.step = 'model';
         await this.sendModelSelection(ctx);
         break;
@@ -670,10 +755,16 @@ export class TelegramBot {
     const state = this.onboardingState;
     if (!state || !state.provider || !state.model) return;
 
+    const tokenExpiresAt = state.tokenExpiresIn
+      ? new Date(Date.now() + state.tokenExpiresIn * 1000).toISOString()
+      : undefined;
+
     const aiConfig: NonNullable<ZarukaConfig['ai']> = {
       provider: state.provider,
       apiKey: state.isOAuth ? undefined : state.apiKey,
       authToken: state.isOAuth ? state.apiKey : undefined,
+      refreshToken: state.isOAuth ? state.refreshToken : undefined,
+      tokenExpiresAt: state.isOAuth ? tokenExpiresAt : undefined,
       model: state.model,
       baseUrl: state.baseUrl ?? null,
     };

@@ -14,6 +14,8 @@ export declare class ConfigManager {
     updateThreshold(key: keyof ResourceThresholds, value: number): void;
     isResourceMonitorEnabled(): boolean;
     getResourceCron(): string;
+    updateAuthToken(authToken: string, refreshToken?: string, expiresAt?: string): void;
+    isTokenExpiringSoon(bufferMs?: number): boolean;
     private save;
 }
 //# sourceMappingURL=config-manager.d.ts.map

@@ -19,6 +19,7 @@ import { Scheduler } from '../scheduler/cron.js';
 import { createZarukaMcpServer } from '../mcp/zaruka-mcp-server.js';
 import { loadCredentials } from '../mcp/credential-tool.js';
 import { createTranscriber } from '../audio/transcribe.js';
+import { startTokenRefreshLoop } from '../auth/token-refresh.js';
 
 const ZARUKA_DIR = process.env.ZARUKA_DATA_DIR || join(homedir(), '.zaruka');
 const CONFIG_PATH = join(ZARUKA_DIR, 'config.json');
@@ -259,6 +260,10 @@ export async function runStart(): Promise<void> {
       const newAssistant = await buildAssistant();
       bot.setAssistant(newAssistant);
       console.log(`Provider: ${configManager.getConfig().ai!.provider} (${configManager.getModel()})`);
+      if (configManager.getConfig().ai?.refreshToken) {
+        startTokenRefreshLoop(configManager);
+        console.log('OAuth token refresh loop started.');
+      }
     },
   );
 
@@ -270,6 +275,10 @@ export async function runStart(): Promise<void> {
 
   if (hasAi) {
     console.log(`Provider: ${configManager.getConfig().ai!.provider} (${configManager.getModel()})`);
+    if (config.ai?.refreshToken) {
+      startTokenRefreshLoop(configManager);
+      console.log('OAuth token refresh loop started.');
+    }
   } else {
     console.log('No AI provider configured. Onboarding will start in Telegram.');
   }

@@ -2,10 +2,12 @@ import { Telegraf, Markup } from 'telegraf';
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
 import { getResourceSnapshot, formatResourceReport } from '../monitor/resources.js';
+import { generatePKCE, buildAuthUrl, extractAuthCode, exchangeCodeForTokens, requestDeviceCode, pollDeviceToken, ANTHROPIC_OAUTH, OPENAI_OAUTH, } from '../auth/oauth.js';
 async function testAiConnection(ai) {
     try {
+        const key = ai.apiKey || ai.authToken;
         if (ai.provider === 'anthropic') {
-            const client = new Anthropic({ apiKey: ai.apiKey });
+            const client = new Anthropic({ apiKey: key });
             await client.messages.create({
                 model: ai.model,
                 max_tokens: 16,
@@ -15,7 +17,7 @@ async function testAiConnection(ai) {
         }
         // OpenAI / OpenAI-compatible
         const client = new OpenAI({
-            apiKey: ai.apiKey || 'no-key',
+            apiKey: key || 'no-key',
             ...(ai.baseUrl ? { baseURL: ai.baseUrl } : {}),
         });
         await client.chat.completions.create({
@@ -287,11 +289,57 @@ export class TelegramBot {
                     + 'Example: http://localhost:11434/v1');
             }
             else {
-                this.onboardingState.step = 'api_key';
+                this.onboardingState.step = 'auth_method';
+                const providerLabel = provider === 'anthropic' ? 'Claude' : 'ChatGPT';
+                await ctx.editMessageText('How would you like to authenticate?', Markup.inlineKeyboard([
+                    [Markup.button.callback('API Key (pay-as-you-go)', 'onboard_auth:api_key')],
+                    [Markup.button.callback(`Sign in with ${providerLabel} (subscription)`, 'onboard_auth:oauth')],
+                ]));
+            }
+        });
+        // Onboarding: auth method selection
+        this.bot.action(/^onboard_auth:(api_key|oauth)$/, async (ctx) => {
+            await ctx.answerCbQuery();
+            if (!this.onboardingState)
+                return;
+            const method = ctx.match[1];
+            const provider = this.onboardingState.provider;
+            this.onboardingState.step = 'api_key';
+            if (method === 'api_key') {
+                this.onboardingState.isOAuth = false;
                 const hint = provider === 'anthropic'
                     ? 'Send your Anthropic API key (starts with `sk-ant-`).\n\nGet one at: https://console.anthropic.com/settings/keys'
                     : 'Send your OpenAI API key (starts with `sk-`).\n\nGet one at: https://platform.openai.com/api-keys';
                 await ctx.editMessageText(hint);
+            }
+            else {
+                this.onboardingState.isOAuth = true;
+                if (provider === 'anthropic') {
+                    const pkce = generatePKCE();
+                    this.onboardingState.codeVerifier = pkce.codeVerifier;
+                    this.onboardingState.oauthState = pkce.state;
+                    const authUrl = buildAuthUrl(ANTHROPIC_OAUTH, pkce);
+                    await ctx.editMessageText('Sign in with your Claude account:\n\n'
+                        + authUrl + '\n\n'
+                        + 'After signing in, copy the full URL from your browser and send it here.\n\n'
+                        + 'Or paste a setup token (starts with sk-ant-oat01-).');
+                }
+                else {
+                    try {
+                        const { deviceAuthId, userCode } = await requestDeviceCode(OPENAI_OAUTH);
+                        this.onboardingState.deviceAuthId = deviceAuthId;
+                        this.onboardingState.deviceUserCode = userCode;
+                        await ctx.editMessageText('Sign in with your ChatGPT account:\n\n'
+                            + '1. Open: https://auth.openai.com/codex/device\n'
+                            + `2. Enter code: ${userCode}\n\n`
+                            + 'After signing in, send "done" here.\n\n'
+                            + 'Or paste a session token if you have one.');
+                    }
+                    catch (err) {
+                        console.error('Device code request failed:', err);
+                        await ctx.editMessageText('Could not start device authorization. Please paste your API key or session token directly.');
+                    }
+                }
             }
         });
         // Onboarding: model selection
@@ -459,6 +507,11 @@ export class TelegramBot {
                 await this.sendOnboardingWelcome(ctx);
                 break;
             }
+            case 'auth_method': {
+                // User sent text instead of clicking a button
+                await ctx.reply('Please choose an authentication method using the buttons above.');
+                break;
+            }
             case 'base_url': {
                 // Self-hosted: receive base URL
                 state.baseUrl = text.trim();
@@ -467,8 +520,59 @@ export class TelegramBot {
                 break;
             }
             case 'api_key': {
-                // Receive API key
-                state.apiKey = text.trim() === '-' ? undefined : text.trim();
+                const input = text.trim();
+                if (state.isOAuth && state.provider === 'anthropic') {
+                    if (input.startsWith('sk-ant-oat01-')) {
+                        // Direct setup token
+                        state.apiKey = input;
+                    }
+                    else {
+                        // Extract auth code from callback URL and exchange for tokens
+                        try {
+                            const code = extractAuthCode(input);
+                            const tokens = await exchangeCodeForTokens(ANTHROPIC_OAUTH, code, state.codeVerifier);
+                            state.apiKey = tokens.accessToken;
+                            state.refreshToken = tokens.refreshToken;
+                            state.tokenExpiresIn = tokens.expiresIn;
+                        }
+                        catch (err) {
+                            const msg = err instanceof Error ? err.message : String(err);
+                            await ctx.reply('Failed to exchange authorization code: ' + msg + '\n\n'
+                                + 'Please try again — paste the full URL from your browser, or a setup token.');
+                            return;
+                        }
+                    }
+                }
+                else if (state.isOAuth && state.provider === 'openai') {
+                    const lower = input.toLowerCase();
+                    if (lower === 'done' || lower === '\u0433\u043e\u0442\u043e\u0432\u043e') {
+                        // Poll for device token
+                        if (!state.deviceAuthId) {
+                            await ctx.reply('No device authorization in progress. Please start over with /start.');
+                            return;
+                        }
+                        try {
+                            await ctx.reply('Checking authorization...');
+                            const tokens = await pollDeviceToken(OPENAI_OAUTH, state.deviceAuthId, 12, 5000);
+                            state.apiKey = tokens.accessToken;
+                            state.refreshToken = tokens.refreshToken;
+                            state.tokenExpiresIn = tokens.expiresIn;
+                        }
+                        catch (err) {
+                            const msg = err instanceof Error ? err.message : String(err);
+                            await ctx.reply('Device authorization failed: ' + msg + '\n\n'
+                                + 'Please try again or paste a session token directly.');
+                            return;
+                        }
+                    }
+                    else {
+                        // Treat as direct token
+                        state.apiKey = input;
+                    }
+                }
+                else {
+                    state.apiKey = input === '-' ? undefined : input;
+                }
                 state.step = 'model';
                 await this.sendModelSelection(ctx);
                 break;
@@ -513,9 +617,15 @@ export class TelegramBot {
         const state = this.onboardingState;
         if (!state || !state.provider || !state.model)
             return;
+        const tokenExpiresAt = state.tokenExpiresIn
+            ? new Date(Date.now() + state.tokenExpiresIn * 1000).toISOString()
+            : undefined;
         const aiConfig = {
             provider: state.provider,
-            apiKey: state.apiKey,
+            apiKey: state.isOAuth ? undefined : state.apiKey,
+            authToken: state.isOAuth ? state.apiKey : undefined,
+            refreshToken: state.isOAuth ? state.refreshToken : undefined,
+            tokenExpiresAt: state.isOAuth ? tokenExpiresAt : undefined,
             model: state.model,
             baseUrl: state.baseUrl ?? null,
         };
