@@ -11,7 +11,7 @@ import { getResourceSnapshot, formatResourceReport } from '../monitor/resources.
 
 export type Transcriber = (fileUrl: string) => Promise<string>;
 
-type OnboardingStep = 'provider' | 'api_key' | 'base_url' | 'model' | 'testing';
+type OnboardingStep = 'provider' | 'auth_method' | 'api_key' | 'base_url' | 'model' | 'testing';
 
 interface OnboardingState {
   step: OnboardingStep;
@@ -19,12 +19,14 @@ interface OnboardingState {
   apiKey?: string;
   baseUrl?: string;
   model?: string;
+  isOAuth?: boolean;
 }
 
 async function testAiConnection(ai: NonNullable<ZarukaConfig['ai']>): Promise<{ ok: boolean; error?: string }> {
   try {
+    const key = ai.apiKey || ai.authToken;
     if (ai.provider === 'anthropic') {
-      const client = new Anthropic({ apiKey: ai.apiKey });
+      const client = new Anthropic({ apiKey: key });
       await client.messages.create({
         model: ai.model,
         max_tokens: 16,
@@ -34,7 +36,7 @@ async function testAiConnection(ai: NonNullable<ZarukaConfig['ai']>): Promise<{ 
     }
     // OpenAI / OpenAI-compatible
     const client = new OpenAI({
-      apiKey: ai.apiKey || 'no-key',
+      apiKey: key || 'no-key',
       ...(ai.baseUrl ? { baseURL: ai.baseUrl } : {}),
     });
     await client.chat.completions.create({
@@ -361,11 +363,46 @@ export class TelegramBot {
           + 'Example: http://localhost:11434/v1',
         );
       } else {
-        this.onboardingState.step = 'api_key';
+        this.onboardingState.step = 'auth_method';
+        const providerLabel = provider === 'anthropic' ? 'Claude' : 'ChatGPT';
+        await ctx.editMessageText(
+          'How would you like to authenticate?',
+          Markup.inlineKeyboard([
+            [Markup.button.callback('API Key (pay-as-you-go)', 'onboard_auth:api_key')],
+            [Markup.button.callback(`Sign in with ${providerLabel} (subscription)`, 'onboard_auth:oauth')],
+          ]),
+        );
+      }
+    });
+
+    // Onboarding: auth method selection
+    this.bot.action(/^onboard_auth:(api_key|oauth)$/, async (ctx) => {
+      await ctx.answerCbQuery();
+      if (!this.onboardingState) return;
+
+      const method = ctx.match[1];
+      const provider = this.onboardingState.provider;
+      this.onboardingState.step = 'api_key';
+
+      if (method === 'api_key') {
+        this.onboardingState.isOAuth = false;
         const hint = provider === 'anthropic'
           ? 'Send your Anthropic API key (starts with `sk-ant-`).\n\nGet one at: https://console.anthropic.com/settings/keys'
           : 'Send your OpenAI API key (starts with `sk-`).\n\nGet one at: https://platform.openai.com/api-keys';
         await ctx.editMessageText(hint);
+      } else {
+        this.onboardingState.isOAuth = true;
+        if (provider === 'anthropic') {
+          await ctx.editMessageText(
+            'Open the link below, click "Generate Setup Token", and send me the token:\n\n'
+            + 'https://claude.ai/settings/oauth-setup',
+          );
+        } else {
+          await ctx.editMessageText(
+            'Run `codex login` in your terminal, then find the token in `~/.openai/session.json` and send it here.\n\n'
+            + 'Or install device auth: `npm install -g @openai/codex-device-auth && codex-device-auth`',
+          );
+        }
       }
     });
 
@@ -566,6 +603,11 @@ export class TelegramBot {
         await this.sendOnboardingWelcome(ctx);
         break;
       }
+      case 'auth_method': {
+        // User sent text instead of clicking a button
+        await ctx.reply('Please choose an authentication method using the buttons above.');
+        break;
+      }
       case 'base_url': {
         // Self-hosted: receive base URL
         state.baseUrl = text.trim();
@@ -630,7 +672,8 @@ export class TelegramBot {
 
     const aiConfig: NonNullable<ZarukaConfig['ai']> = {
       provider: state.provider,
-      apiKey: state.apiKey,
+      apiKey: state.isOAuth ? undefined : state.apiKey,
+      authToken: state.isOAuth ? state.apiKey : undefined,
       model: state.model,
       baseUrl: state.baseUrl ?? null,
     };
