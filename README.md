@@ -10,9 +10,8 @@
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/zaruka"><img src="https://img.shields.io/npm/v/zaruka?color=blue" alt="npm" /></a>
-  <a href="https://github.com/zaruka-ai/zaruka/blob/main/LICENSE"><img src="https://img.shields.io/npm/l/zaruka" alt="license" /></a>
-  <a href="https://nodejs.org"><img src="https://img.shields.io/node/v/zaruka" alt="node" /></a>
+  <a href="https://github.com/zaruka-ai/zaruka/blob/main/LICENSE"><img src="https://img.shields.io/github/license/zaruka-ai/zaruka" alt="license" /></a>
+  <a href="https://github.com/zaruka-ai/zaruka/pkgs/container/zaruka"><img src="https://img.shields.io/badge/ghcr.io-zaruka-blue" alt="docker" /></a>
 </p>
 
 <p align="center">

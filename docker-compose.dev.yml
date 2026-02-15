@@ -1,0 +1,22 @@
+services:
+  zaruka-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: zaruka-dev
+    volumes:
+      - ./src:/app/src
+      - ./bin:/app/bin
+      - zaruka-dev-data:/data
+      - zaruka-claude-sessions:/home/node/.claude
+    environment:
+      - ZARUKA_TELEGRAM_TOKEN=${ZARUKA_TELEGRAM_TOKEN}
+      - ZARUKA_DATA_DIR=/data
+      # Pass OAuth token if set
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
+    env_file:
+      - .env
+
+volumes:
+  zaruka-dev-data:
+  zaruka-claude-sessions:

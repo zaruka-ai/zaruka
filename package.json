@@ -7,41 +7,30 @@
     "url": "https://github.com/zaruka-ai/zaruka.git"
   },
   "type": "module",
-  "bin": {
-    "zaruka": "./dist/bin/cli.js"
-  },
   "scripts": {
     "build": "tsc",
     "dev": "tsx watch src/cli/index.ts start",
     "start": "node dist/src/cli/index.js start",
     "setup": "tsx src/cli/index.ts setup",
-    "prepublishOnly": "npm run build"
+    "docker:dev": "docker compose -f docker-compose.dev.yml up --build",
+    "docker:dev:up": "docker compose -f docker-compose.dev.yml up"
   },
-  "files": [
-    "dist",
-    "package.json",
-    "README.md",
-    "LICENSE"
-  ],
-  "keywords": [
-    "ai",
-    "assistant",
-    "telegram",
-    "self-hosted",
-    "claude",
-    "openai"
-  ],
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.44",
+    "@ai-sdk/openai": "^3.0.29",
     "@anthropic-ai/claude-agent-sdk": "^0.2.41",
     "@anthropic-ai/sdk": "^0.39.0",
     "@huggingface/transformers": "^3.8.1",
+    "ai": "^6.0.86",
     "better-sqlite3": "^11.7.0",
+    "ccusage": "^18.0.5",
     "commander": "^13.1.0",
     "inquirer": "^12.3.2",
     "node-cron": "^3.0.3",
     "openai": "^4.82.0",
+    "sharp": "^0.34.1",
     "telegraf": "^4.16.3",
     "zod": "^4.3.6"
   },
