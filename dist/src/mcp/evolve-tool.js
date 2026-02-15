@@ -91,7 +91,7 @@ async function preResearch(description) {
     return { urls, snippets, pages };
 }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function createEvolveTool(skillsDir, authToken) {
+export function createEvolveTool(skillsDir, authToken, model) {
     return tool('evolve_skill', 'SELF-EVOLUTION: Create a new skill that adds capabilities you don\'t have yet. You MUST call this tool whenever a user asks for something no existing tool can do — BEFORE saying you cannot help. The new skill will be available on the next message. Be creative: use public APIs, web scraping, calculations, etc.', {
         skill_name: z.string().describe('Short snake_case name for the skill (e.g. "currency_converter", "translator")'),
         description: z.string().describe('Detailed description of what the skill should do, including expected inputs and outputs'),
@@ -178,7 +178,7 @@ export function createEvolveTool(skillsDir, authToken) {
         const conversation = query({
             prompt,
             options: {
-                model: 'claude-haiku-4-5-20251001',
+                model: model || 'claude-sonnet-4-5-20250929',
                 systemPrompt: [
                     `You are a skill developer for the Zaruka AI assistant. You create JavaScript skill files in ${skillsDir}.`,
                     '',

@@ -76,6 +76,15 @@ export interface ResourceSnapshot {
   timestamp: string;
 }
 
+// === User Profile ===
+
+export interface UserProfile {
+  name?: string;
+  city?: string;
+  timezone?: string;
+  birthday?: string; // MM-DD format
+}
+
 // === Config ===
 
 export interface ZarukaConfig {
@@ -92,6 +101,7 @@ export interface ZarukaConfig {
     model: string;
     baseUrl: string | null;
   };
+  profile?: UserProfile;
   timezone: string;
   language?: string;
   reminderCron: string;

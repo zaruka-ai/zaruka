@@ -8,14 +8,16 @@ export class Assistant {
         this.provider = opts.provider ?? null;
         this.registry = opts.registry ?? null;
         this.sdkRunner = opts.sdkRunner ?? null;
-        this.systemPrompt = [
+        const lines = [
             'You are Zaruka, a self-evolving personal AI assistant.',
             `User timezone: ${opts.timezone}. Current time: ${new Date().toLocaleString('en-US', { timeZone: opts.timezone })}.`,
             'Be concise and friendly. Respond in the same language the user writes in.',
-            'Use the available tools for tasks, weather, etc.',
-            'When creating tasks with due dates, parse natural language dates relative to the current date.',
-            'If the user asks for something you cannot do with existing tools, try to find a creative solution or suggest alternatives.',
-        ].join('\n');
+        ];
+        if (opts.userName) {
+            lines.push(`The user's name is ${opts.userName}. Address them by name naturally but don't overuse it.`);
+        }
+        lines.push('Use the available tools for tasks, weather, etc.', 'When creating tasks with due dates, parse natural language dates relative to the current date.', 'If the user asks for something you cannot do with existing tools, try to find a creative solution or suggest alternatives.');
+        this.systemPrompt = lines.join('\n');
     }
     async process(userMessage, history) {
         // Anthropic path: delegate to AgentSdkRunner (handles tool loop internally)

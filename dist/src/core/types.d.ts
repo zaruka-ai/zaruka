@@ -73,6 +73,12 @@ export interface ResourceSnapshot {
     };
     timestamp: string;
 }
+export interface UserProfile {
+    name?: string;
+    city?: string;
+    timezone?: string;
+    birthday?: string;
+}
 export interface ZarukaConfig {
     telegram: {
         botToken: string;
@@ -87,6 +93,7 @@ export interface ZarukaConfig {
         model: string;
         baseUrl: string | null;
     };
+    profile?: UserProfile;
     timezone: string;
     language?: string;
     reminderCron: string;
