@@ -2,11 +2,12 @@ import { randomBytes, createHash } from 'node:crypto';
 // === Provider configs ===
 export const ANTHROPIC_OAUTH = {
     authUrl: 'https://claude.ai/oauth/authorize',
-    tokenUrl: 'https://console.anthropic.com/v1/oauth/token',
+    tokenUrl: 'https://platform.claude.com/v1/oauth/token',
     clientId: '9d1c250a-e61b-44d9-88ed-5944d1962f5e',
-    redirectUri: 'https://console.anthropic.com/oauth/code/callback',
-    scopes: 'user:inference user:profile',
+    redirectUri: 'https://platform.claude.com/oauth/code/callback',
+    scopes: 'org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers',
     tokenJson: true,
+    extraParams: { code: 'true' },
 };
 export const OPENAI_OAUTH = {
     authUrl: 'https://auth.openai.com/oauth/authorize',
@@ -40,14 +41,17 @@ export function buildAuthUrl(config, pkce) {
     return `${config.authUrl}?${params.toString()}`;
 }
 // === Token exchange ===
-export async function exchangeCodeForTokens(config, code, codeVerifier) {
+export async function exchangeCodeForTokens(config, code, codeVerifier, state) {
     const payload = {
         grant_type: 'authorization_code',
         client_id: config.clientId,
         code,
-        redirect_uri: config.redirectUri,
         code_verifier: codeVerifier,
+        redirect_uri: config.redirectUri,
     };
+    if (state) {
+        payload.state = state;
+    }
     const res = await fetch(config.tokenUrl, {
         method: 'POST',
         ...tokenRequestOptions(config, payload),
@@ -56,7 +60,14 @@ export async function exchangeCodeForTokens(config, code, codeVerifier) {
         const text = await res.text();
         throw new Error(`Token exchange failed (${res.status}): ${text}`);
     }
-    return parseTokenResponse(await res.json());
+    const data = await res.json();
+    console.log('[OAuth] Token exchange response:', JSON.stringify({
+        scope: data.scope,
+        token_type: data.token_type,
+        expires_in: data.expires_in,
+        access_token_prefix: typeof data.access_token === 'string' ? data.access_token.slice(0, 20) + '...' : undefined,
+    }));
+    return parseTokenResponse(data);
 }
 export async function refreshAccessToken(config, refreshToken) {
     const payload = {
@@ -128,43 +139,62 @@ export async function requestDeviceCode(config) {
         userCode: data.user_code,
     };
 }
-export async function pollDeviceToken(config, deviceAuthId, maxAttempts = 60, intervalMs = 5000) {
+export async function pollDeviceToken(config, deviceAuthId, maxAttempts = 60, intervalMs = 5000, onProgress) {
     for (let i = 0; i < maxAttempts; i++) {
-        const res = await fetch('https://auth.openai.com/api/accounts/deviceauth/token', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                client_id: config.clientId,
-                device_auth_id: deviceAuthId,
-            }),
-        });
-        if (res.ok) {
-            const data = await res.json();
-            const authCode = data.auth_code;
-            if (authCode) {
-                // Exchange the auth code for tokens via standard token endpoint
-                const body = new URLSearchParams({
-                    grant_type: 'authorization_code',
+        try {
+            const res = await fetch('https://auth.openai.com/api/accounts/deviceauth/token', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
                     client_id: config.clientId,
-                    code: authCode,
-                    redirect_uri: config.redirectUri,
-                });
-                const tokenRes = await fetch(config.tokenUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                    body: body.toString(),
-                });
-                if (!tokenRes.ok) {
-                    const text = await tokenRes.text();
-                    throw new Error(`Device token exchange failed (${tokenRes.status}): ${text}`);
+                    device_auth_id: deviceAuthId,
+                }),
+            });
+            const data = await res.json();
+            if (res.ok) {
+                // The response may contain access_token directly or auth_code to exchange
+                if (data.access_token) {
+                    return {
+                        accessToken: data.access_token,
+                        refreshToken: data.refresh_token,
+                        expiresIn: data.expires_in,
+                    };
                 }
-                const tokenData = await tokenRes.json();
-                return {
-                    accessToken: tokenData.access_token,
-                    refreshToken: tokenData.refresh_token,
-                    expiresIn: tokenData.expires_in,
-                };
+                const authCode = data.auth_code;
+                if (authCode) {
+                    // Exchange the auth code for tokens via standard token endpoint
+                    const body = new URLSearchParams({
+                        grant_type: 'authorization_code',
+                        client_id: config.clientId,
+                        code: authCode,
+                        redirect_uri: config.redirectUri,
+                    });
+                    const tokenRes = await fetch(config.tokenUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: body.toString(),
+                    });
+                    if (!tokenRes.ok) {
+                        const text = await tokenRes.text();
+                        throw new Error(`Device token exchange failed (${tokenRes.status}): ${text}`);
+                    }
+                    const tokenData = await tokenRes.json();
+                    return {
+                        accessToken: tokenData.access_token,
+                        refreshToken: tokenData.refresh_token,
+                        expiresIn: tokenData.expires_in,
+                    };
+                }
             }
+            // Report polling status
+            const status = data.error || `http ${res.status}`;
+            onProgress?.(i + 1, maxAttempts, status);
+        }
+        catch (err) {
+            // Network errors during polling are non-fatal — just retry
+            onProgress?.(i + 1, maxAttempts, 'network error');
+            if (i === maxAttempts - 1)
+                throw err;
         }
         // Not ready yet — wait and retry
         await new Promise((resolve) => setTimeout(resolve, intervalMs));
