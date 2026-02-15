@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import type { ZarukaConfig, ResourceThresholds } from './types.js';
+import type { ZarukaConfig, ResourceThresholds, UserProfile } from './types.js';
 
 const ZARUKA_DIR = process.env.ZARUKA_DATA_DIR || join(homedir(), '.zaruka');
 const CONFIG_PATH = join(ZARUKA_DIR, 'config.json');
@@ -57,6 +57,20 @@ export class ConfigManager {
     this.save();
   }
 
+  getProfile(): UserProfile | undefined {
+    return this.config.profile;
+  }
+
+  updateProfile(profile: Partial<UserProfile>): void {
+    this.config.profile = { ...this.config.profile, ...profile };
+    this.save();
+  }
+
+  updateTimezone(tz: string): void {
+    this.config.timezone = tz;
+    this.save();
+  }
+
   getLanguage(): string {
     return this.config.language || 'auto';
   }
@@ -84,6 +98,19 @@ export class ConfigManager {
 
   isResourceMonitorEnabled(): boolean {
     return this.config.resourceMonitor?.enabled ?? true;
+  }
+
+  setResourceMonitorEnabled(enabled: boolean): void {
+    if (!this.config.resourceMonitor) {
+      this.config.resourceMonitor = {
+        enabled,
+        cronExpression: '*/5 * * * *',
+        thresholds: { ...DEFAULT_THRESHOLDS },
+      };
+    } else {
+      this.config.resourceMonitor.enabled = enabled;
+    }
+    this.save();
   }
 
   getResourceCron(): string {
