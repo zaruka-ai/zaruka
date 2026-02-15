@@ -51,8 +51,15 @@ export class AgentSdkRunner {
         let usedTools = false;
         const cleanEnv = { ...process.env };
         delete cleanEnv.CLAUDECODE;
+        delete cleanEnv.CLAUDE_CODE_ENTRYPOINT;
+        // Set OAuth token for the SDK subprocess
         if (this.authToken) {
             cleanEnv.CLAUDE_CODE_OAUTH_TOKEN = this.authToken;
+            console.log('[runQuery] OAuth token set, prefix:', this.authToken.slice(0, 20) + '...');
+        }
+        else {
+            delete cleanEnv.CLAUDE_CODE_OAUTH_TOKEN;
+            console.log('[runQuery] No authToken available');
         }
         const conversation = query({
             prompt,
@@ -69,34 +76,42 @@ export class AgentSdkRunner {
                 debugFile: '/tmp/zaruka-agent-debug.log',
             },
         });
-        for await (const msg of conversation) {
-            if (msg.type === 'assistant') {
-                for (const block of msg.message.content) {
-                    if (typeof block === 'object' && 'text' in block) {
-                        resultText += block.text;
+        try {
+            for await (const msg of conversation) {
+                if (msg.type === 'assistant') {
+                    for (const block of msg.message.content) {
+                        if (typeof block === 'object' && 'text' in block) {
+                            resultText += block.text;
+                        }
+                        if (typeof block === 'object' && 'type' in block && block.type === 'tool_use') {
+                            usedTools = true;
+                        }
                     }
-                    if (typeof block === 'object' && 'type' in block && block.type === 'tool_use') {
-                        usedTools = true;
+                }
+                else if (msg.type === 'result') {
+                    if (msg.subtype === 'success' && msg.result) {
+                        resultText = msg.result;
+                    }
+                    // Track usage from the result message (SDK provides aggregated totals)
+                    if (this.onUsage) {
+                        const r = msg;
+                        const costUsd = typeof r.total_cost_usd === 'number' ? r.total_cost_usd : 0;
+                        const usage = r.usage;
+                        this.onUsage({
+                            inputTokens: usage?.input_tokens ?? 0,
+                            outputTokens: usage?.output_tokens ?? 0,
+                            costUsd,
+                            model: this.model,
+                        });
                     }
                 }
             }
-            else if (msg.type === 'result') {
-                if (msg.subtype === 'success' && msg.result) {
-                    resultText = msg.result;
-                }
-                // Track usage from the result message (SDK provides aggregated totals)
-                if (this.onUsage) {
-                    const r = msg;
-                    const costUsd = typeof r.total_cost_usd === 'number' ? r.total_cost_usd : 0;
-                    const usage = r.usage;
-                    this.onUsage({
-                        inputTokens: usage?.input_tokens ?? 0,
-                        outputTokens: usage?.output_tokens ?? 0,
-                        costUsd,
-                        model: this.model,
-                    });
-                }
-            }
+        }
+        catch (err) {
+            // The SDK throws when the child process exits with non-zero code,
+            // even after a successful result. Ignore if we already have output.
+            if (!resultText)
+                throw err;
         }
         return { text: resultText || '', usedTools };
     }
