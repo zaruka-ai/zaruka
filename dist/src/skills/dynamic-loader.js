@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, symlinkSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, symlinkSync, mkdirSync, writeFileSync, readlinkSync, unlinkSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 /**
@@ -16,8 +16,6 @@ function ensureSkillsDeps(skillsDir) {
     }
     // Symlink node_modules so skills can import zod, SDK, etc.
     const targetLink = join(skillsDir, 'node_modules');
-    if (existsSync(targetLink))
-        return;
     // Find zaruka's node_modules from this file's location
     // In compiled: dist/skills/dynamic-loader.js → ../../node_modules
     // In dev:      src/skills/dynamic-loader.ts  → ../../node_modules
@@ -26,6 +24,19 @@ function ensureSkillsDeps(skillsDir) {
     const nodeModules = join(projectRoot, 'node_modules');
     if (!existsSync(nodeModules))
         return;
+    // Remove stale symlink if it points to the wrong location
+    try {
+        const current = readlinkSync(targetLink);
+        if (current !== nodeModules) {
+            unlinkSync(targetLink);
+        }
+        else {
+            return; // Already correct
+        }
+    }
+    catch {
+        // Not a symlink or doesn't exist — proceed to create
+    }
     try {
         symlinkSync(nodeModules, targetLink, 'dir');
         console.log('Skills: linked node_modules');

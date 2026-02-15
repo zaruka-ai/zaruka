@@ -79,7 +79,7 @@ function getDefaultModel(provider?: string): string {
   }
 }
 
-function buildSystemPrompt(timezone: string, language: string): string {
+function buildSystemPrompt(timezone: string, language: string, userName?: string, birthday?: string): string {
   const langInstruction = language === 'auto'
     ? [
       'LANGUAGE: Detect the language of the user\'s message and respond in EXACTLY that language.',
@@ -90,22 +90,36 @@ function buildSystemPrompt(timezone: string, language: string): string {
       `If the user writes in a different language, still respond in ${language} unless they explicitly ask you to switch.`,
     ];
 
+  const profileLines: string[] = [];
+  if (userName) {
+    profileLines.push(`The user's name is ${userName}. Address them by name naturally but don't overuse it.`);
+  }
+  if (birthday) {
+    const [mm, dd] = birthday.split('-');
+    const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    const formatted = `${monthNames[parseInt(mm, 10) - 1]} ${parseInt(dd, 10)}`;
+    profileLines.push(`The user's birthday is ${formatted}. If today matches, warmly congratulate them!`);
+  }
+
   return [
     'You are Zaruka, an omnipotent personal AI assistant that can do anything.',
     `Current time: ${new Date().toLocaleString('en-US', { timeZone: timezone })}. Use this for date calculations.`,
     'Be concise and friendly.',
+    ...profileLines,
     '',
     ...langInstruction,
     'If the user asks to change the response language, comply immediately and use the new language.',
     '',
-    'Use the available tools for tasks, weather, etc.',
+    'You run on the user\'s own server with full shell access. You CAN install packages, run commands, read/write files.',
+    'Use the available tools for tasks, weather, shell commands, etc.',
     'When creating tasks with due dates, parse natural language dates relative to the current date.',
     '',
     'CRITICAL RULES:',
     '',
     '1. SELF-EVOLUTION (invisible to user):',
-    'When you receive a request that no existing tool can handle, ALWAYS call evolve_skill.',
-    'NEVER say "I can\'t do this" or "I don\'t have access" — call evolve_skill first.',
+    'When you receive a request that no existing tool can handle, ALWAYS call evolve_skill to create the capability.',
+    'NEVER say "I can\'t do this", "I don\'t have access", or suggest the user do something manually.',
+    'You have shell access — if you need to install something, run a command, or fetch data, DO IT via tools.',
     'NEVER tell the user you "created a new skill" or "learned something new".',
     'Act as if you ALWAYS had this capability. Be seamless and natural.',
     '',
@@ -178,6 +192,7 @@ export async function runStart(): Promise<void> {
   async function buildAssistant(): Promise<Assistant> {
     const cfg = configManager.getConfig();
     const ai = cfg.ai!;
+    const profile = configManager.getProfile();
 
     if (ai.provider === 'anthropic') {
       const mcpServer = await createZarukaMcpServer({
@@ -190,14 +205,14 @@ export async function runStart(): Promise<void> {
       const runner = new AgentSdkRunner({
         model: configManager.getModel(),
         authToken: ai.authToken,
-        systemPrompt: buildSystemPrompt(cfg.timezone, configManager.getLanguage()),
+        systemPrompt: buildSystemPrompt(cfg.timezone, configManager.getLanguage(), profile?.name, profile?.birthday),
         mcpServer,
         onUsage: (usage) => {
           usageRepo.track(usage.model, usage.inputTokens, usage.outputTokens, usage.costUsd);
         },
       });
 
-      return new Assistant({ sdkRunner: runner, timezone: cfg.timezone });
+      return new Assistant({ sdkRunner: runner, timezone: cfg.timezone, userName: profile?.name });
     }
 
     // OpenAI / OpenAI-compatible path
@@ -221,7 +236,7 @@ export async function runStart(): Promise<void> {
     registry.register(new TasksSkill(taskRepo));
     registry.register(new WeatherSkill());
 
-    return new Assistant({ provider, registry, timezone: cfg.timezone });
+    return new Assistant({ provider, registry, timezone: cfg.timezone, userName: profile?.name });
   }
 
   // Build assistant if AI is already configured
