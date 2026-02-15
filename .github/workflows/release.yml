@@ -64,7 +64,7 @@ jobs:
         continue-on-error: true
         uses: actions/ai-inference@v1
         with:
-          model: openai/gpt-4o-mini
+          model: openai/gpt-4.1-nano
           max-tokens: 1024
           system-prompt: |
             You write release notes for Zaruka — a personal AI assistant that runs on your machine and talks to you through Telegram.
