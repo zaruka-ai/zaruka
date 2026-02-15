@@ -18,6 +18,22 @@ export interface UsageSummary {
   breakdown: UsageRecord[];
 }
 
+export interface DailyTotal {
+  date: string;
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd: number;
+  requests: number;
+}
+
+export interface ModelBreakdown {
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd: number;
+  requests: number;
+}
+
 const PROVIDER_URLS: Record<string, { usage: string; billing: string; name: string }> = {
   anthropic: {
     name: 'Anthropic',
@@ -61,9 +77,23 @@ export class UsageRepository {
     return this.getByRange(today, today);
   }
 
+  getWeek(): UsageSummary {
+    const now = new Date();
+    const from = new Date(now);
+    from.setDate(from.getDate() - 6);
+    return this.getByRange(from.toISOString().slice(0, 10), now.toISOString().slice(0, 10));
+  }
+
   getMonth(): UsageSummary {
     const now = new Date();
     const from = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+    const to = now.toISOString().slice(0, 10);
+    return this.getByRange(from, to);
+  }
+
+  getYear(): UsageSummary {
+    const now = new Date();
+    const from = `${now.getFullYear()}-01-01`;
     const to = now.toISOString().slice(0, 10);
     return this.getByRange(from, to);
   }
@@ -96,6 +126,57 @@ export class UsageRepository {
       requests,
       breakdown: rows,
     };
+  }
+
+  getDailyTotals(from: string, to: string): DailyTotal[] {
+    return this.db.prepare(`
+      SELECT date,
+             SUM(input_tokens) as input_tokens,
+             SUM(output_tokens) as output_tokens,
+             SUM(cost_usd) as cost_usd,
+             SUM(requests) as requests
+      FROM api_usage
+      WHERE date >= ? AND date <= ?
+      GROUP BY date
+      ORDER BY date ASC
+    `).all(from, to) as DailyTotal[];
+  }
+
+  getModelBreakdown(from: string, to: string): ModelBreakdown[] {
+    return this.db.prepare(`
+      SELECT model,
+             SUM(input_tokens) as input_tokens,
+             SUM(output_tokens) as output_tokens,
+             SUM(cost_usd) as cost_usd,
+             SUM(requests) as requests
+      FROM api_usage
+      WHERE date >= ? AND date <= ?
+      GROUP BY model
+      ORDER BY cost_usd DESC
+    `).all(from, to) as ModelBreakdown[];
+  }
+
+  static getDateRange(period: 'today' | 'week' | 'month' | 'year'): { from: string; to: string; label: string } {
+    const now = new Date();
+    const to = now.toISOString().slice(0, 10);
+
+    switch (period) {
+      case 'today':
+        return { from: to, to, label: 'Today' };
+      case 'week': {
+        const from = new Date(now);
+        from.setDate(from.getDate() - 6);
+        return { from: from.toISOString().slice(0, 10), to, label: 'Last 7 days' };
+      }
+      case 'month': {
+        const from = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+        return { from, to, label: `${now.toLocaleString('en', { month: 'long' })} ${now.getFullYear()}` };
+      }
+      case 'year': {
+        const from = `${now.getFullYear()}-01-01`;
+        return { from, to, label: String(now.getFullYear()) };
+      }
+    }
   }
 
   static getProviderUrls(provider: string): { usage: string; billing: string; name: string } {
@@ -142,7 +223,7 @@ export class UsageRepository {
   }
 }
 
-function fmtNum(n: number): string {
+export function fmtNum(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
   return String(n);

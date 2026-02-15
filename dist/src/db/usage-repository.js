@@ -36,9 +36,21 @@ export class UsageRepository {
         const today = new Date().toISOString().slice(0, 10);
         return this.getByRange(today, today);
     }
+    getWeek() {
+        const now = new Date();
+        const from = new Date(now);
+        from.setDate(from.getDate() - 6);
+        return this.getByRange(from.toISOString().slice(0, 10), now.toISOString().slice(0, 10));
+    }
     getMonth() {
         const now = new Date();
         const from = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+        const to = now.toISOString().slice(0, 10);
+        return this.getByRange(from, to);
+    }
+    getYear() {
+        const now = new Date();
+        const from = `${now.getFullYear()}-01-01`;
         const to = now.toISOString().slice(0, 10);
         return this.getByRange(from, to);
     }
@@ -67,6 +79,53 @@ export class UsageRepository {
             requests,
             breakdown: rows,
         };
+    }
+    getDailyTotals(from, to) {
+        return this.db.prepare(`
+      SELECT date,
+             SUM(input_tokens) as input_tokens,
+             SUM(output_tokens) as output_tokens,
+             SUM(cost_usd) as cost_usd,
+             SUM(requests) as requests
+      FROM api_usage
+      WHERE date >= ? AND date <= ?
+      GROUP BY date
+      ORDER BY date ASC
+    `).all(from, to);
+    }
+    getModelBreakdown(from, to) {
+        return this.db.prepare(`
+      SELECT model,
+             SUM(input_tokens) as input_tokens,
+             SUM(output_tokens) as output_tokens,
+             SUM(cost_usd) as cost_usd,
+             SUM(requests) as requests
+      FROM api_usage
+      WHERE date >= ? AND date <= ?
+      GROUP BY model
+      ORDER BY cost_usd DESC
+    `).all(from, to);
+    }
+    static getDateRange(period) {
+        const now = new Date();
+        const to = now.toISOString().slice(0, 10);
+        switch (period) {
+            case 'today':
+                return { from: to, to, label: 'Today' };
+            case 'week': {
+                const from = new Date(now);
+                from.setDate(from.getDate() - 6);
+                return { from: from.toISOString().slice(0, 10), to, label: 'Last 7 days' };
+            }
+            case 'month': {
+                const from = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+                return { from, to, label: `${now.toLocaleString('en', { month: 'long' })} ${now.getFullYear()}` };
+            }
+            case 'year': {
+                const from = `${now.getFullYear()}-01-01`;
+                return { from, to, label: String(now.getFullYear()) };
+            }
+        }
     }
     static getProviderUrls(provider) {
         return PROVIDER_URLS[provider] || PROVIDER_URLS['openai-compatible'];
@@ -106,7 +165,7 @@ export class UsageRepository {
         return lines.join('\n');
     }
 }
-function fmtNum(n) {
+export function fmtNum(n) {
     if (n >= 1_000_000)
         return `${(n / 1_000_000).toFixed(1)}M`;
     if (n >= 1_000)
