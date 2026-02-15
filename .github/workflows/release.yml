@@ -61,6 +61,7 @@ jobs:
       - name: Generate changelog with AI
         if: steps.version.outputs.exists == 'false'
         id: changelog
+        continue-on-error: true
         uses: actions/ai-inference@v1
         with:
           model: openai/gpt-4o-mini
@@ -81,10 +82,16 @@ jobs:
         run: |
           TAG="${{ steps.version.outputs.tag }}"
 
-          # Save AI-generated changelog, fall back to raw commits
+          # Save AI-generated changelog, fall back to raw commit messages
           CHANGELOG="${{ steps.changelog.outputs.response }}"
           if [ -z "$CHANGELOG" ]; then
-            CHANGELOG=$(cat /tmp/commits.txt)
+            PREV_TAG="${{ steps.version.outputs.prev_tag }}"
+            if [ -n "$PREV_TAG" ]; then
+              RANGE="${PREV_TAG}..HEAD"
+            else
+              RANGE="$(git rev-list --max-parents=0 HEAD)..HEAD"
+            fi
+            CHANGELOG=$(git log "$RANGE" --pretty=format:"- %s" --no-merges | head -50)
           fi
           echo "$CHANGELOG" > /tmp/changelog.md
 
