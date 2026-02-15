@@ -1,6 +1,6 @@
 {
   "name": "zaruka",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Decentralized personal AI assistant — self-hosted, model-agnostic",
   "repository": {
     "type": "git",
@@ -20,12 +20,10 @@
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.44",
     "@ai-sdk/openai": "^3.0.29",
-    "@anthropic-ai/claude-agent-sdk": "^0.2.41",
     "@anthropic-ai/sdk": "^0.39.0",
     "@huggingface/transformers": "^3.8.1",
     "ai": "^6.0.86",
     "better-sqlite3": "^11.7.0",
-    "ccusage": "^18.0.5",
     "commander": "^13.1.0",
     "inquirer": "^12.3.2",
     "node-cron": "^3.0.3",
