@@ -41,6 +41,8 @@ export class Scheduler {
         }
     }
     async checkResources() {
+        if (!this.configManager.isResourceMonitorEnabled())
+            return;
         const snapshot = await getResourceSnapshot();
         const thresholds = this.configManager.getThresholds();
         const alerts = [];

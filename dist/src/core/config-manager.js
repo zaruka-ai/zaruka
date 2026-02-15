@@ -44,6 +44,17 @@ export class ConfigManager {
         this.config.ai = ai;
         this.save();
     }
+    getProfile() {
+        return this.config.profile;
+    }
+    updateProfile(profile) {
+        this.config.profile = { ...this.config.profile, ...profile };
+        this.save();
+    }
+    updateTimezone(tz) {
+        this.config.timezone = tz;
+        this.save();
+    }
     getLanguage() {
         return this.config.language || 'auto';
     }
@@ -67,6 +78,19 @@ export class ConfigManager {
     }
     isResourceMonitorEnabled() {
         return this.config.resourceMonitor?.enabled ?? true;
+    }
+    setResourceMonitorEnabled(enabled) {
+        if (!this.config.resourceMonitor) {
+            this.config.resourceMonitor = {
+                enabled,
+                cronExpression: '*/5 * * * *',
+                thresholds: { ...DEFAULT_THRESHOLDS },
+            };
+        }
+        else {
+            this.config.resourceMonitor.enabled = enabled;
+        }
+        this.save();
     }
     getResourceCron() {
         return this.config.resourceMonitor?.cronExpression ?? '*/5 * * * *';
