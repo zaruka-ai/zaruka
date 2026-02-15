@@ -11,6 +11,7 @@ export declare class Assistant {
         registry?: SkillRegistry;
         sdkRunner?: AgentSdkRunner;
         timezone: string;
+        userName?: string;
     });
     process(userMessage: string, history?: ChatMessage[]): Promise<string>;
 }

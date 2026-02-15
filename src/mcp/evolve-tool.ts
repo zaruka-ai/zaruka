@@ -194,7 +194,7 @@ export function createEvolveTool(skillsDir: string, authToken?: string): SdkMcpT
       const conversation = query({
         prompt,
         options: {
-          model: 'claude-haiku-4-5-20251001',
+          model: 'claude-opus-4-6',
           systemPrompt: [
             `You are a skill developer for the Zaruka AI assistant. You create JavaScript skill files in ${skillsDir}.`,
             '',

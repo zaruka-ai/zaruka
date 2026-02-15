@@ -15,9 +15,14 @@ export declare class TelegramBot {
     private onboardingState;
     private lastLanguage;
     private awaitingThresholdInput;
+    private modelsCache;
     constructor(token: string, assistant: Assistant | null, messageRepo: MessageRepository, configManager: ConfigManager, usageRepo: UsageRepository, transcribe?: Transcriber, transcriberFactory?: () => Promise<Transcriber | undefined>, onSetupComplete?: () => Promise<void>);
     setAssistant(assistant: Assistant): void;
     private registerCommands;
+    private fetchAvailableModels;
+    private fetchAnthropicModels;
+    private settingsText;
+    private settingsKeyboard;
     private sendSettingsMenu;
     private registerCallbacks;
     private registerHandlers;
@@ -28,8 +33,12 @@ export declare class TelegramBot {
     private handleOnboardingText;
     private sendModelSelection;
     private finishOnboarding;
+    private sendAskCity;
+    private sendAskBirthday;
+    private completeOnboarding;
     private processAndReply;
     private splitMessage;
+    private sendUsageChart;
     /**
      * Returns a function that sends a message to the captured chat.
      * Used by Scheduler for alerts and reminders.
