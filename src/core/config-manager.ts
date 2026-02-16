@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import type { ZarukaConfig, ResourceThresholds, UserProfile } from './types.js';
+import type { ZarukaConfig, AiProviderConfig, ResourceThresholds, UserProfile } from './types.js';
 
 const ZARUKA_DIR = process.env.ZARUKA_DATA_DIR || join(homedir(), '.zaruka');
 const CONFIG_PATH = join(ZARUKA_DIR, 'config.json');
@@ -53,8 +53,22 @@ export class ConfigManager {
   }
 
   updateAiConfig(ai: ZarukaConfig['ai']): void {
+    // Save the current provider config before switching
+    if (this.config.ai?.provider) {
+      if (!this.config.savedProviders) this.config.savedProviders = {};
+      this.config.savedProviders[this.config.ai.provider] = { ...this.config.ai };
+    }
     this.config.ai = ai;
+    // Also save the new provider config
+    if (ai?.provider) {
+      if (!this.config.savedProviders) this.config.savedProviders = {};
+      this.config.savedProviders[ai.provider] = { ...ai };
+    }
     this.save();
+  }
+
+  getSavedProvider(provider: string): AiProviderConfig | undefined {
+    return this.config.savedProviders?.[provider];
   }
 
   getProfile(): UserProfile | undefined {
@@ -77,6 +91,25 @@ export class ConfigManager {
 
   updateLanguage(language: string): void {
     this.config.language = language;
+    delete this.config.uiTranslations;
+    this.save();
+  }
+
+  getTranslation(key: string): string | undefined {
+    return this.config.uiTranslations?.strings[key];
+  }
+
+  getTranslationLanguage(): string | undefined {
+    return this.config.uiTranslations?.language;
+  }
+
+  updateTranslations(language: string, strings: Record<string, string>): void {
+    this.config.uiTranslations = { language, strings };
+    this.save();
+  }
+
+  clearTranslations(): void {
+    delete this.config.uiTranslations;
     this.save();
   }
 
@@ -134,6 +167,18 @@ export class ConfigManager {
     const expiresAt = this.config.ai?.tokenExpiresAt;
     if (!expiresAt) return false;
     return Date.now() + bufferMs >= new Date(expiresAt).getTime();
+  }
+
+  /** Wipe all data except the Telegram bot token. Returns a fresh minimal config. */
+  resetAll(): ZarukaConfig {
+    const fresh: ZarukaConfig = {
+      telegram: { botToken: this.config.telegram.botToken },
+      timezone: 'UTC',
+      reminderCron: '0 9 * * *',
+    };
+    this.config = { ...fresh };
+    this.save();
+    return fresh;
   }
 
   private save(): void {

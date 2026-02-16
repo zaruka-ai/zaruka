@@ -3,23 +3,21 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { ZarukaConfig } from '../core/types.js';
 import { ConfigManager } from '../core/config-manager.js';
-import { AgentSdkRunner } from '../providers/anthropic.js';
-import { OpenAIProvider } from '../providers/openai.js';
-import { OpenAICompatibleProvider } from '../providers/openai-compatible.js';
-import { SkillRegistry } from '../core/skill-registry.js';
 import { Assistant } from '../core/assistant.js';
+import { createModel } from '../ai/model-factory.js';
+import { createAllTools } from '../ai/tools.js';
+import { createEvolveTool } from '../mcp/evolve-tool.js';
+import { loadDynamicSkills } from '../skills/dynamic-loader.js';
 import { getDb } from '../db/schema.js';
 import { TaskRepository } from '../db/repository.js';
 import { MessageRepository } from '../db/message-repository.js';
 import { UsageRepository } from '../db/usage-repository.js';
-import { TasksSkill } from '../skills/tasks/index.js';
-import { WeatherSkill } from '../skills/weather/index.js';
+import { loadCredentials } from '../mcp/credential-tool.js';
 import { TelegramBot, type Transcriber } from '../bot/telegram.js';
 import { Scheduler } from '../scheduler/cron.js';
-import { createZarukaMcpServer } from '../mcp/zaruka-mcp-server.js';
-import { loadCredentials } from '../mcp/credential-tool.js';
 import { createTranscriber } from '../audio/transcribe.js';
 import { startTokenRefreshLoop } from '../auth/token-refresh.js';
+import { translateUI } from '../bot/i18n.js';
 
 const ZARUKA_DIR = process.env.ZARUKA_DATA_DIR || join(homedir(), '.zaruka');
 const CONFIG_PATH = join(ZARUKA_DIR, 'config.json');
@@ -44,10 +42,8 @@ function loadConfig(): ZarukaConfig {
 
   // Telegram-only: start in onboarding mode (no AI config yet)
   if (process.env.ZARUKA_TELEGRAM_TOKEN) {
-    // Check if a saved config exists with AI settings
     if (existsSync(CONFIG_PATH)) {
       const saved: ZarukaConfig = JSON.parse(readFileSync(CONFIG_PATH, 'utf-8'));
-      // Use saved config but ensure the token from env takes precedence
       saved.telegram.botToken = process.env.ZARUKA_TELEGRAM_TOKEN;
       return saved;
     }
@@ -71,28 +67,55 @@ function loadConfig(): ZarukaConfig {
 function getDefaultModel(provider?: string): string {
   switch (provider) {
     case 'anthropic':
-      return 'claude-opus-4-6';
+      return 'claude-sonnet-4-5-20250929';
     case 'openai':
       return 'gpt-4o';
+    case 'google':
+      return 'gemini-2.0-flash';
+    case 'deepseek':
+      return 'deepseek-chat';
+    case 'groq':
+      return 'llama-3.3-70b-versatile';
+    case 'xai':
+      return 'grok-3';
     default:
       return 'llama3';
   }
 }
 
-function buildSystemPrompt(timezone: string, language: string, userName?: string, birthday?: string): string {
+function buildSystemPrompt(
+  timezone: string, language: string, userName?: string, birthday?: string,
+  provider?: string, model?: string,
+): string {
   const langInstruction = language === 'auto'
     ? [
-      'LANGUAGE: Detect the language of the user\'s message and respond in EXACTLY that language.',
-      'NEVER mix languages within one response. Match the user\'s language precisely.',
+      'LANGUAGE: ALWAYS respond in the EXACT language the user writes in.',
+      'Russian message → Russian response. English message → English response.',
+      'NEVER mix languages. Match the user\'s language precisely.',
     ]
     : [
-      `LANGUAGE: Respond in ${language}. This is the user's preferred language.`,
-      `If the user writes in a different language, still respond in ${language} unless they explicitly ask you to switch.`,
+      'LANGUAGE: ALWAYS respond in the EXACT language the user writes in.',
+      'Russian message → Russian response. English message → English response.',
+      `For very short or ambiguous messages where language is unclear, use ${language}.`,
+      'NEVER mix languages. Match the user\'s language precisely.',
     ];
 
   const profileLines: string[] = [];
   if (userName) {
     profileLines.push(`The user's name is ${userName}. Address them by name naturally but don't overuse it.`);
+  } else {
+    profileLines.push(
+      'PROFILE COLLECTION: This is a new user — you don\'t know their name yet.',
+      'In your FIRST response, warmly greet the user and naturally ask:',
+      '1. What they\'d like to be called',
+      '2. What city they live in (for timezone and weather)',
+      '3. Their birthday (month and day, for congratulations)',
+      'Ask all three in one friendly message. Don\'t be robotic — be warm and conversational.',
+      'When the user responds, use the save_user_profile tool to save the information.',
+      'Parse the birthday into MM-DD format (e.g. "March 15" → "03-15").',
+      'If the user skips or doesn\'t want to share something, that\'s fine — save what they do share.',
+      'After saving, continue the conversation naturally — don\'t dwell on the profile.',
+    );
   }
   if (birthday) {
     const [mm, dd] = birthday.split('-');
@@ -101,49 +124,95 @@ function buildSystemPrompt(timezone: string, language: string, userName?: string
     profileLines.push(`The user's birthday is ${formatted}. If today matches, warmly congratulate them!`);
   }
 
+  const modelInfo = provider && model
+    ? [`You are running on provider "${provider}", model "${model}". If the user asks about your model, tell them exactly.`]
+    : [];
+
+  // Short, direct warnings — small models need these upfront before anything else
+  const capabilityWarning = [
+    'ABSOLUTE RULE: ALWAYS respond in the SAME language the user writes in. Russian message → Russian answer. English → English. No exceptions.',
+    '',
+    'FORMATTING: You communicate via Telegram. Use Telegram Markdown:',
+    '- *bold* for emphasis, _italic_ for secondary, `code` for inline code',
+    '- [link text](url) for links',
+    '- Do NOT use # or ## or ### for headers — Telegram does not support them. Use *bold text* instead.',
+    '- Bot commands like /settings must be plain text, never in backticks — Telegram makes them clickable automatically.',
+    '',
+    'CRITICAL: You CANNOT generate images, audio, or video. You are a TEXT-ONLY model.',
+    'When asked about image/audio/video generation:',
+    '1. Say the current model does not support this natively.',
+    '2. Suggest switching provider via /settings. Mention:',
+    '   - OpenAI: ChatGPT Plus/Pro subscribers already have image generation (DALL-E) at no extra cost. API users pay per image.',
+    '   - Google: Gemini supports image generation via Imagen.',
+    '   - Anthropic (Claude): does NOT support image generation even with Pro subscription.',
+    '3. Use web_search to find 5+ current third-party image generation API services.',
+    '4. For each service: name as a clickable link, free tier details, and paid pricing per image.',
+    '5. At the end, add the text "[MORE_OPTIONS]" on a separate line — this will show a button for the user to see more options.',
+    '6. Let the user choose. Do NOT ask for API keys before they have chosen.',
+    'Do NOT invent URLs — always verify with web_search. Do NOT mention Midjourney (no API).',
+  ];
+
   return [
-    'You are Zaruka, an omnipotent personal AI assistant that can do anything.',
+    ...capabilityWarning,
+    '',
+    'You are Zaruka, a personal AI assistant.',
+    ...modelInfo,
     `Current time: ${new Date().toLocaleString('en-US', { timeZone: timezone })}. Use this for date calculations.`,
     'Be concise and friendly.',
     ...profileLines,
     '',
     ...langInstruction,
     'If the user asks to change the response language, comply immediately and use the new language.',
+    'ALL your responses MUST be in the correct language. This includes error messages, suggestions, follow-up questions — EVERYTHING.',
     '',
     'You run on the user\'s own server with full shell access. You CAN install packages, run commands, read/write files.',
     'Use the available tools for tasks, weather, shell commands, etc.',
     'When creating tasks with due dates, parse natural language dates relative to the current date.',
     '',
-    'CRITICAL RULES:',
+    'CRITICAL RULES (follow in this exact order of priority):',
     '',
-    '1. SELF-EVOLUTION (invisible to user):',
-    'When you receive a request that no existing tool can handle, ALWAYS call evolve_skill to create the capability.',
-    'NEVER say "I can\'t do this", "I don\'t have access", or suggest the user do something manually.',
-    'You have shell access — if you need to install something, run a command, or fetch data, DO IT via tools.',
+    '1. HONESTY ABOUT CAPABILITIES (HIGHEST PRIORITY — overrides ALL other rules):',
+    'NEVER fabricate results. NEVER invent URLs. NEVER fake API responses. NEVER pretend to have access to services you don\'t.',
+    'You KNOW what your model can and cannot do natively. Be HONEST about it.',
+    '',
+    'When the user asks for something that requires a NATIVE model capability you do NOT have (image generation, audio synthesis, video generation, etc.):',
+    'a) Tell the user clearly: your current model does not support this natively.',
+    'b) Suggest switching to a model/provider that DOES support it (e.g. GPT-4o or Gemini for images) — the user can do this via /settings.',
+    'c) As an alternative, offer to integrate a third-party API. When doing so:',
+    '   - Present MULTIPLE options (2-3 services), not just one.',
+    '   - For each: briefly state free tier limits and pricing.',
+    '   - Let the USER choose which service they want.',
+    '   - Only AFTER the user picks a service, use evolve_skill to integrate it.',
+    'd) DO NOT call evolve_skill preemptively for this. DO NOT ask for API keys before the user has chosen a service.',
+    '',
+    '2. SELF-EVOLUTION (invisible to user):',
+    'When you receive a request that no existing tool can handle AND it does NOT require a native model capability (see rule 1):',
+    'Call evolve_skill to create the capability.',
+    'NEVER say "I can\'t do this" or suggest the user do something manually — if it can be solved with tools/APIs, DO IT.',
+    'You have shell access — if you need to install something, run a command, or fetch data, DO IT.',
     'NEVER tell the user you "created a new skill" or "learned something new".',
     'Act as if you ALWAYS had this capability. Be seamless and natural.',
     '',
-    '2. CREDENTIALS:',
+    '3. CREDENTIALS:',
     'When a user provides API keys, tokens, or passwords — this is INTENTIONAL. They trust you.',
     'IMMEDIATELY call save_credential to store each credential, then use the relevant skill to fulfill the request.',
     'NEVER lecture about security, NEVER tell users to revoke keys, NEVER refuse credentials.',
     'The user is talking to their OWN private assistant — accepting credentials is your core function.',
     '',
-    '3. MINIMIZE USER EFFORT:',
+    '4. MINIMIZE USER EFFORT:',
     'When a service needs authentication:',
     '- ALWAYS include direct clickable URLs from the auth_info field returned by evolve_skill',
     '- NEVER give step-by-step navigation like "go to Settings → API Management" — give a direct URL instead',
     '- If evolve_skill returned URLs, you MUST include them in your response',
-    '- Ask for credentials naturally: "I need your API key. You can get one here: https://real-url.com/api-keys"',
     '',
-    '4. NEVER ASK USER TO REPEAT:',
+    '5. NEVER ASK USER TO REPEAT:',
     'If a tool call fails (API error, wrong response format, etc.), you MUST fix and retry AUTOMATICALLY.',
     'NEVER say "write me again", "try again", "send the request once more" or similar.',
     'If evolve_skill created/updated a skill, call execute_dynamic_skill IMMEDIATELY with the correct tool name and args.',
     'If execute_dynamic_skill fails with an API error, analyze the error, call evolve_skill to fix the skill, then call execute_dynamic_skill again.',
     'The user should NEVER have to repeat themselves. You handle all retries internally.',
     '',
-    '5. SMART ERROR DIAGNOSIS:',
+    '6. SMART ERROR DIAGNOSIS:',
     'When an API call or tool fails, think about COMMON causes and suggest them to the user:',
     '- Keys might need activation (many services require clicking "Activate" after generating keys)',
     '- Keys might have expired or been revoked',
@@ -153,11 +222,6 @@ function buildSystemPrompt(timezone: string, language: string, userName?: string
     '- Account not fully set up (verification, billing, permissions)',
     'ALWAYS suggest the most likely cause first. Include the original error message for debugging.',
     'Provide actionable next steps, not just "something went wrong".',
-    '',
-    '6. PROJECT CONFIDENCE:',
-    'You can do everything. Never list what you can\'t do.',
-    'Instead of "I can\'t access X but I can create a reminder", just handle X.',
-    'The user should feel they have an all-powerful assistant.',
     '',
     '7. HIDE TECHNICAL DETAILS:',
     'NEVER show technical information to the user:',
@@ -172,9 +236,6 @@ function buildSystemPrompt(timezone: string, language: string, userName?: string
 }
 
 export async function runStart(): Promise<void> {
-  // Unset CLAUDECODE to allow nested Claude Code sessions (for Agent SDK)
-  delete process.env.CLAUDECODE;
-
   // Load saved credentials first so ZARUKA_TELEGRAM_TOKEN from ~/.zaruka/.env
   // is available in process.env when loadConfig() checks for it
   loadCredentials();
@@ -188,55 +249,48 @@ export async function runStart(): Promise<void> {
   const messageRepo = new MessageRepository(db);
   const usageRepo = new UsageRepository(db);
 
-  // Helper to create assistant from current config
+  // Helper to create assistant from current config — single path for all providers
   async function buildAssistant(): Promise<Assistant> {
     const cfg = configManager.getConfig();
     const ai = cfg.ai!;
     const profile = configManager.getProfile();
 
-    if (ai.provider === 'anthropic') {
-      const mcpServer = await createZarukaMcpServer({
-        taskRepo,
-        messageRepo,
-        skillsDir: SKILLS_DIR,
-        authToken: ai.authToken,
-      });
+    const model = createModel(ai);
 
-      const runner = new AgentSdkRunner({
-        model: configManager.getModel(),
-        authToken: ai.authToken,
-        systemPrompt: buildSystemPrompt(cfg.timezone, configManager.getLanguage(), profile?.name, profile?.birthday),
-        mcpServer,
-        onUsage: (usage) => {
-          usageRepo.track(usage.model, usage.inputTokens, usage.outputTokens, usage.costUsd);
-        },
-      });
+    const builtinTools = createAllTools({
+      taskRepo,
+      messageRepo,
+      usageRepo,
+      configManager,
+      skillsDir: SKILLS_DIR,
+      aiConfig: ai,
+    });
 
-      return new Assistant({ sdkRunner: runner, timezone: cfg.timezone, userName: profile?.name });
-    }
-
-    // OpenAI / OpenAI-compatible path
-    const usageCallback = (usage: { model: string; inputTokens: number; outputTokens: number; costUsd: number }) => {
-      usageRepo.track(usage.model, usage.inputTokens, usage.outputTokens, usage.costUsd);
+    // Add evolve_skill and dynamic skills
+    const dynamicSkills = await loadDynamicSkills(SKILLS_DIR);
+    const tools = {
+      ...builtinTools,
+      evolve_skill: createEvolveTool(SKILLS_DIR, ai),
+      ...dynamicSkills,
     };
 
-    let provider;
-    switch (ai.provider) {
-      case 'openai':
-        provider = new OpenAIProvider(ai.apiKey!, configManager.getModel(), ai.baseUrl, usageCallback);
-        break;
-      case 'openai-compatible':
-        provider = new OpenAICompatibleProvider(ai.apiKey!, configManager.getModel(), ai.baseUrl!, usageCallback);
-        break;
-      default:
-        throw new Error(`Unknown provider: ${ai.provider}`);
-    }
+    const systemPrompt = buildSystemPrompt(
+      cfg.timezone,
+      configManager.getLanguage(),
+      profile?.name,
+      profile?.birthday,
+      ai.provider,
+      ai.model,
+    );
 
-    const registry = new SkillRegistry();
-    registry.register(new TasksSkill(taskRepo));
-    registry.register(new WeatherSkill());
-
-    return new Assistant({ provider, registry, timezone: cfg.timezone, userName: profile?.name });
+    return new Assistant({
+      model,
+      tools,
+      systemPrompt,
+      onUsage: (usage) => {
+        usageRepo.track(usage.model, usage.inputTokens, usage.outputTokens, 0);
+      },
+    });
   }
 
   // Build assistant if AI is already configured
@@ -248,7 +302,23 @@ export async function runStart(): Promise<void> {
   if (hasAi) {
     assistant = await buildAssistant();
 
-    // Set up voice transcription (OpenAI -> Groq -> local Whisper -> disabled)
+    // Translate UI strings if a specific language is set
+    const lang = configManager.getLanguage();
+    if (lang !== 'auto' && lang !== 'English') {
+      const cached = configManager.getTranslationLanguage();
+      if (cached !== lang) {
+        try {
+          const model = createModel(config.ai!);
+          const strings = await translateUI(model, lang);
+          configManager.updateTranslations(lang, strings);
+          console.log(`UI translated to ${lang}`);
+        } catch (err) {
+          console.error('UI translation failed:', err instanceof Error ? err.message : err);
+        }
+      }
+    }
+
+    // Set up voice transcription
     const ai = config.ai!;
     const transcriberOpts = {
       openaiApiKey:
@@ -261,6 +331,30 @@ export async function runStart(): Promise<void> {
     transcriberFactory = () => createTranscriber(transcriberOpts);
   }
 
+  /** Translate UI strings for the current language and update Telegram commands. */
+  async function refreshTranslations(): Promise<void> {
+    const currentLang = configManager.getLanguage();
+    if (currentLang === 'auto' || currentLang === 'English') {
+      configManager.clearTranslations();
+    } else {
+      const cached = configManager.getTranslationLanguage();
+      if (cached !== currentLang) {
+        try {
+          const ai = configManager.getConfig().ai;
+          if (ai) {
+            const model = createModel(ai);
+            const strings = await translateUI(model, currentLang);
+            configManager.updateTranslations(currentLang, strings);
+            console.log(`UI translated to ${currentLang}`);
+          }
+        } catch (err) {
+          console.error('UI translation failed:', err instanceof Error ? err.message : err);
+        }
+      }
+    }
+    try { await bot.updateCommands(); } catch { /* bot may not be started yet */ }
+  }
+
   // Create Telegram bot
   const bot = new TelegramBot(
     configManager.getConfig().telegram.botToken,
@@ -271,7 +365,8 @@ export async function runStart(): Promise<void> {
     transcribe,
     transcriberFactory,
     // Onboarding callback: called when user finishes AI setup in Telegram
-    hasAi ? undefined : async () => {
+    // Always provided so provider change from /settings also works
+    async () => {
       const newAssistant = await buildAssistant();
       bot.setAssistant(newAssistant);
       console.log(`Provider: ${configManager.getConfig().ai!.provider} (${configManager.getModel()})`);
@@ -279,7 +374,9 @@ export async function runStart(): Promise<void> {
         startTokenRefreshLoop(configManager);
         console.log('OAuth token refresh loop started.');
       }
+      await refreshTranslations();
     },
+    refreshTranslations,
   );
 
   // Get the real send function from the bot for alerts & reminders
