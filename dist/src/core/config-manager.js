@@ -41,8 +41,23 @@ export class ConfigManager {
         }
     }
     updateAiConfig(ai) {
+        // Save the current provider config before switching
+        if (this.config.ai?.provider) {
+            if (!this.config.savedProviders)
+                this.config.savedProviders = {};
+            this.config.savedProviders[this.config.ai.provider] = { ...this.config.ai };
+        }
         this.config.ai = ai;
+        // Also save the new provider config
+        if (ai?.provider) {
+            if (!this.config.savedProviders)
+                this.config.savedProviders = {};
+            this.config.savedProviders[ai.provider] = { ...ai };
+        }
         this.save();
+    }
+    getSavedProvider(provider) {
+        return this.config.savedProviders?.[provider];
     }
     getProfile() {
         return this.config.profile;
@@ -60,6 +75,21 @@ export class ConfigManager {
     }
     updateLanguage(language) {
         this.config.language = language;
+        delete this.config.uiTranslations;
+        this.save();
+    }
+    getTranslation(key) {
+        return this.config.uiTranslations?.strings[key];
+    }
+    getTranslationLanguage() {
+        return this.config.uiTranslations?.language;
+    }
+    updateTranslations(language, strings) {
+        this.config.uiTranslations = { language, strings };
+        this.save();
+    }
+    clearTranslations() {
+        delete this.config.uiTranslations;
         this.save();
     }
     getThresholds() {
@@ -112,6 +142,17 @@ export class ConfigManager {
         if (!expiresAt)
             return false;
         return Date.now() + bufferMs >= new Date(expiresAt).getTime();
+    }
+    /** Wipe all data except the Telegram bot token. Returns a fresh minimal config. */
+    resetAll() {
+        const fresh = {
+            telegram: { botToken: this.config.telegram.botToken },
+            timezone: 'UTC',
+            reminderCron: '0 9 * * *',
+        };
+        this.config = { ...fresh };
+        this.save();
+        return fresh;
     }
     save() {
         if (!existsSync(ZARUKA_DIR)) {

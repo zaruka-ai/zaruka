@@ -30,5 +30,5 @@ export declare function exchangeCodeForTokens(config: OAuthConfig, code: string,
 export declare function refreshAccessToken(config: OAuthConfig, refreshToken: string): Promise<TokenResponse>;
 export declare function extractAuthCode(input: string): string;
 export declare function requestDeviceCode(config: OAuthConfig): Promise<DeviceCodeResponse>;
-export declare function pollDeviceToken(config: OAuthConfig, deviceAuthId: string, maxAttempts?: number, intervalMs?: number, onProgress?: (attempt: number, maxAttempts: number, status: string) => void): Promise<TokenResponse>;
+export declare function pollDeviceToken(config: OAuthConfig, deviceAuthId: string, userCode: string, maxAttempts?: number, intervalMs?: number, onProgress?: (attempt: number, maxAttempts: number, status: string) => void): Promise<TokenResponse>;
 //# sourceMappingURL=oauth.d.ts.map

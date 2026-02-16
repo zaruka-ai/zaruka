@@ -139,7 +139,7 @@ export async function requestDeviceCode(config) {
         userCode: data.user_code,
     };
 }
-export async function pollDeviceToken(config, deviceAuthId, maxAttempts = 60, intervalMs = 5000, onProgress) {
+export async function pollDeviceToken(config, deviceAuthId, userCode, maxAttempts = 60, intervalMs = 5000, onProgress) {
     for (let i = 0; i < maxAttempts; i++) {
         try {
             const res = await fetch('https://auth.openai.com/api/accounts/deviceauth/token', {
@@ -148,9 +148,11 @@ export async function pollDeviceToken(config, deviceAuthId, maxAttempts = 60, in
                 body: JSON.stringify({
                     client_id: config.clientId,
                     device_auth_id: deviceAuthId,
+                    user_code: userCode,
                 }),
             });
             const data = await res.json();
+            console.log(`[DevicePoll] status=${res.status} data=${JSON.stringify(data).slice(0, 300)}`);
             if (res.ok) {
                 // The response may contain access_token directly or auth_code to exchange
                 if (data.access_token) {
@@ -160,25 +162,32 @@ export async function pollDeviceToken(config, deviceAuthId, maxAttempts = 60, in
                         expiresIn: data.expires_in,
                     };
                 }
-                const authCode = data.auth_code;
+                const authCode = (data.authorization_code || data.auth_code);
                 if (authCode) {
-                    // Exchange the auth code for tokens via standard token endpoint
+                    console.log('[DevicePoll] Got authorization_code, exchanging for tokens...');
+                    const codeVerifier = data.code_verifier;
+                    // Device code flow uses a server-side callback, not the local redirect
+                    const deviceRedirectUri = new URL(config.tokenUrl).origin + '/deviceauth/callback';
                     const body = new URLSearchParams({
                         grant_type: 'authorization_code',
                         client_id: config.clientId,
                         code: authCode,
-                        redirect_uri: config.redirectUri,
+                        redirect_uri: deviceRedirectUri,
+                        ...(codeVerifier ? { code_verifier: codeVerifier } : {}),
                     });
+                    console.log(`[DevicePoll] Token exchange: url=${config.tokenUrl} redirect_uri=${deviceRedirectUri}`);
                     const tokenRes = await fetch(config.tokenUrl, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                         body: body.toString(),
                     });
+                    const tokenText = await tokenRes.text();
+                    console.log(`[DevicePoll] Token exchange response: status=${tokenRes.status} body=${tokenText.slice(0, 200)}`);
                     if (!tokenRes.ok) {
-                        const text = await tokenRes.text();
-                        throw new Error(`Device token exchange failed (${tokenRes.status}): ${text}`);
+                        // Auth code is one-time use — retrying won't help
+                        throw new Error(`Device token exchange failed (${tokenRes.status}): ${tokenText}`);
                     }
-                    const tokenData = await tokenRes.json();
+                    const tokenData = JSON.parse(tokenText);
                     return {
                         accessToken: tokenData.access_token,
                         refreshToken: tokenData.refresh_token,
@@ -187,11 +196,17 @@ export async function pollDeviceToken(config, deviceAuthId, maxAttempts = 60, in
                 }
             }
             // Report polling status
-            const status = data.error || `http ${res.status}`;
+            const rawError = data.error;
+            const status = (typeof rawError === 'string' ? rawError : rawError ? JSON.stringify(rawError) : null) || `http ${res.status}`;
             onProgress?.(i + 1, maxAttempts, status);
         }
         catch (err) {
-            // Network errors during polling are non-fatal — just retry
+            const msg = err instanceof Error ? err.message : String(err);
+            // Token exchange failures are fatal — auth code is single-use
+            if (msg.includes('Device token exchange failed'))
+                throw err;
+            // Other errors (network etc.) are non-fatal — just retry
+            console.error(`[DevicePoll] Error: ${msg}`);
             onProgress?.(i + 1, maxAttempts, 'network error');
             if (i === maxAttempts - 1)
                 throw err;
