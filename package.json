@@ -16,7 +16,7 @@
     "docker:dev:up": "docker compose -f docker-compose.dev.yml up"
   },
   "author": "",
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.44",
     "@ai-sdk/google": "^3.0.29",
