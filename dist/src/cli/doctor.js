@@ -47,33 +47,19 @@ export async function runDoctor() {
     const provider = config.ai?.provider;
     if (provider) {
         console.log(`  ✓ AI provider: ${provider} (${config.ai?.model})`);
-        if (provider === 'anthropic') {
-            try {
-                const { query } = await import('@anthropic-ai/claude-agent-sdk');
-                const conversation = query({
-                    prompt: 'Reply with OK',
-                    options: { model: config.ai.model, maxTurns: 1 },
-                });
-                let got = false;
-                for await (const msg of conversation) {
-                    if (msg.type === 'result')
-                        got = true;
-                }
-                if (got) {
-                    console.log('  ✓ Claude Agent SDK is working');
-                }
-                else {
-                    console.log('  ✗ Claude Agent SDK: no response');
-                    allOk = false;
-                }
-            }
-            catch (e) {
-                console.log(`  ✗ Claude Agent SDK error: ${e instanceof Error ? e.message : e}`);
-                allOk = false;
-            }
+        try {
+            const { generateText } = await import('ai');
+            const { createModel } = await import('../ai/model-factory.js');
+            const model = createModel(config.ai);
+            await generateText({
+                model,
+                prompt: 'Reply with OK',
+                maxOutputTokens: 16,
+            });
+            console.log('  ✓ AI connection is working');
         }
-        else if (!config.ai?.apiKey) {
-            console.log('  ✗ API key not configured');
+        catch (e) {
+            console.log(`  ✗ AI connection error: ${e instanceof Error ? e.message : e}`);
             allOk = false;
         }
     }

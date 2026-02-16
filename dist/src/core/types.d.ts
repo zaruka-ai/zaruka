@@ -1,33 +1,3 @@
-export interface Message {
-    role: 'user' | 'assistant' | 'system';
-    content: string;
-}
-export interface ToolDefinition {
-    name: string;
-    description: string;
-    parameters: Record<string, unknown>;
-}
-export interface ToolCall {
-    name: string;
-    params: Record<string, unknown>;
-}
-export interface LLMResponse {
-    text?: string;
-    toolCalls?: ToolCall[];
-    usage?: {
-        inputTokens: number;
-        outputTokens: number;
-    };
-}
-export interface LLMProvider {
-    chat(messages: Message[], tools?: ToolDefinition[]): Promise<LLMResponse>;
-}
-export interface Skill {
-    name: string;
-    description: string;
-    tools: ToolDefinition[];
-    execute(toolName: string, params: Record<string, unknown>): Promise<string>;
-}
 export interface Task {
     id: number;
     title: string;
@@ -79,20 +49,24 @@ export interface UserProfile {
     timezone?: string;
     birthday?: string;
 }
+export type AiProvider = 'anthropic' | 'openai' | 'google' | 'deepseek' | 'groq' | 'xai' | 'openai-compatible';
+export type AiProviderConfig = {
+    provider: AiProvider;
+    apiKey?: string;
+    authToken?: string;
+    refreshToken?: string;
+    tokenExpiresAt?: string;
+    model: string;
+    baseUrl: string | null;
+};
 export interface ZarukaConfig {
     telegram: {
         botToken: string;
         chatId?: number;
     };
-    ai?: {
-        provider: 'anthropic' | 'openai' | 'openai-compatible';
-        apiKey?: string;
-        authToken?: string;
-        refreshToken?: string;
-        tokenExpiresAt?: string;
-        model: string;
-        baseUrl: string | null;
-    };
+    ai?: AiProviderConfig;
+    /** Previously configured providers, keyed by provider name. */
+    savedProviders?: Record<string, AiProviderConfig>;
     profile?: UserProfile;
     timezone: string;
     language?: string;
@@ -101,6 +75,11 @@ export interface ZarukaConfig {
         enabled: boolean;
         cronExpression: string;
         thresholds: ResourceThresholds;
+    };
+    /** Cached AI-translated UI strings. */
+    uiTranslations?: {
+        language: string;
+        strings: Record<string, string>;
     };
 }
 //# sourceMappingURL=types.d.ts.map

@@ -9,80 +9,74 @@ function ensureSkillsDeps(skillsDir) {
     if (!existsSync(skillsDir)) {
         mkdirSync(skillsDir, { recursive: true });
     }
-    // Create package.json with "type": "module" for ESM support
     const pkgPath = join(skillsDir, 'package.json');
     if (!existsSync(pkgPath)) {
         writeFileSync(pkgPath, JSON.stringify({ type: 'module' }, null, 2));
     }
-    // Symlink node_modules so skills can import zod, SDK, etc.
     const targetLink = join(skillsDir, 'node_modules');
-    // Find zaruka's node_modules from this file's location
-    // In compiled: dist/skills/dynamic-loader.js → ../../node_modules
-    // In dev:      src/skills/dynamic-loader.ts  → ../../node_modules
     const thisFile = fileURLToPath(import.meta.url);
     const projectRoot = join(dirname(thisFile), '..', '..');
     const nodeModules = join(projectRoot, 'node_modules');
     if (!existsSync(nodeModules))
         return;
-    // Remove stale symlink if it points to the wrong location
     try {
         const current = readlinkSync(targetLink);
         if (current !== nodeModules) {
             unlinkSync(targetLink);
         }
         else {
-            return; // Already correct
+            return;
         }
     }
     catch {
-        // Not a symlink or doesn't exist — proceed to create
+        // Not a symlink or doesn't exist
     }
     try {
         symlinkSync(nodeModules, targetLink, 'dir');
         console.log('Skills: linked node_modules');
     }
     catch {
-        // Ignore — may already exist or lack permissions
+        // Ignore
     }
 }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+/**
+ * Load dynamic skills from the skills directory.
+ * New format: each skill exports `tools` as a ToolSet (Record<string, Tool>).
+ */
 export async function loadDynamicSkills(skillsDir) {
     ensureSkillsDeps(skillsDir);
     if (!existsSync(skillsDir)) {
-        return [];
+        return {};
     }
     const files = readdirSync(skillsDir).filter((f) => f.endsWith('.js') || f.endsWith('.mjs'));
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const tools = [];
-    const toolNames = new Set();
+    const tools = {};
     for (const file of files) {
         try {
             const fullPath = join(skillsDir, file);
             const mod = await import(pathToFileURL(fullPath).href);
             let loadedCount = 0;
-            // Each skill file must export `tools` — an array of SdkMcpToolDefinition
-            if (Array.isArray(mod.tools)) {
-                for (const t of mod.tools) {
-                    if (t && typeof t.name === 'string' && typeof t.handler === 'function') {
-                        if (toolNames.has(t.name)) {
-                            console.warn(`Skills: skipping duplicate tool "${t.name}" from ${file}`);
-                            continue;
-                        }
-                        tools.push(t);
-                        toolNames.add(t.name);
-                        loadedCount++;
+            if (mod.tools && typeof mod.tools === 'object' && !Array.isArray(mod.tools)) {
+                // New format: tools is a ToolSet
+                for (const [name, t] of Object.entries(mod.tools)) {
+                    if (name in tools) {
+                        console.warn(`Skills: skipping duplicate tool "${name}" from ${file}`);
+                        continue;
                     }
+                    tools[name] = t;
+                    loadedCount++;
                 }
             }
-            else if (mod.default && Array.isArray(mod.default)) {
-                for (const t of mod.default) {
+            else if (Array.isArray(mod.tools) || Array.isArray(mod.default)) {
+                // Legacy format: tools is an array of { name, handler } (old Claude Agent SDK format)
+                const toolsList = Array.isArray(mod.tools) ? mod.tools : mod.default;
+                for (const t of toolsList) {
                     if (t && typeof t.name === 'string' && typeof t.handler === 'function') {
-                        if (toolNames.has(t.name)) {
+                        if (t.name in tools) {
                             console.warn(`Skills: skipping duplicate tool "${t.name}" from ${file}`);
                             continue;
                         }
-                        tools.push(t);
-                        toolNames.add(t.name);
+                        // Wrap legacy tool into compatible shape for execute_dynamic_skill
+                        tools[t.name] = { execute: t.handler };
                         loadedCount++;
                     }
                 }

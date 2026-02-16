@@ -94,11 +94,13 @@ export function getDiskUsage(mount = '/') {
         const lines = output.trim().split('\n');
         if (lines.length < 2)
             throw new Error('Unexpected df output');
-        // df -k outputs: Filesystem 1K-blocks Used Available Use% Mounted
+        // df -k outputs: Filesystem 1K-blocks Used Available ...
         const parts = lines[1].split(/\s+/);
         const totalKB = parseInt(parts[1], 10);
-        const usedKB = parseInt(parts[2], 10);
         const availKB = parseInt(parts[3], 10);
+        // Derive used from total - available (the "Used" column from df is
+        // unreliable on macOS APFS where it reports per-volume snapshot usage).
+        const usedKB = totalKB - availKB;
         const totalGB = Math.round((totalKB / 1048576) * 10) / 10;
         const usedGB = Math.round((usedKB / 1048576) * 10) / 10;
         const freeGB = Math.round((availKB / 1048576) * 10) / 10;

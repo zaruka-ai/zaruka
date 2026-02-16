@@ -1,61 +1,47 @@
+import { runAgent } from '../ai/agent.js';
 const MAX_TOOL_ROUNDS = 10;
+function getModelId(model) {
+    return typeof model === 'string' ? model : model.modelId;
+}
 export class Assistant {
-    provider;
-    registry;
-    sdkRunner;
+    model;
+    tools;
     systemPrompt;
+    onUsage;
     constructor(opts) {
-        this.provider = opts.provider ?? null;
-        this.registry = opts.registry ?? null;
-        this.sdkRunner = opts.sdkRunner ?? null;
-        const lines = [
-            'You are Zaruka, a self-evolving personal AI assistant.',
-            `User timezone: ${opts.timezone}. Current time: ${new Date().toLocaleString('en-US', { timeZone: opts.timezone })}.`,
-            'Be concise and friendly. Respond in the same language the user writes in.',
-        ];
-        if (opts.userName) {
-            lines.push(`The user's name is ${opts.userName}. Address them by name naturally but don't overuse it.`);
-        }
-        lines.push('Use the available tools for tasks, weather, etc.', 'When creating tasks with due dates, parse natural language dates relative to the current date.', 'If the user asks for something you cannot do with existing tools, try to find a creative solution or suggest alternatives.');
-        this.systemPrompt = lines.join('\n');
+        this.model = opts.model;
+        this.tools = opts.tools;
+        this.systemPrompt = opts.systemPrompt;
+        this.onUsage = opts.onUsage;
     }
     async process(userMessage, history) {
-        // Anthropic path: delegate to AgentSdkRunner (handles tool loop internally)
-        if (this.sdkRunner) {
-            return this.sdkRunner.process(userMessage, history);
-        }
-        // OpenAI path: manual tool loop via SkillRegistry
-        if (!this.provider || !this.registry) {
-            return 'Assistant is not configured.';
-        }
-        const messages = [
-            { role: 'system', content: this.systemPrompt },
-            { role: 'user', content: userMessage },
-        ];
-        const tools = this.registry.getAllTools();
-        for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-            const response = await this.provider.chat(messages, tools.length > 0 ? tools : undefined);
-            if (!response.toolCalls || response.toolCalls.length === 0) {
-                return response.text ?? '';
-            }
-            const toolResults = [];
-            for (const call of response.toolCalls) {
-                const result = await this.registry.executeTool(call.name, call.params);
-                toolResults.push(`[${call.name}]: ${result}`);
-            }
-            if (response.text) {
-                messages.push({ role: 'assistant', content: response.text });
-            }
-            messages.push({
-                role: 'assistant',
-                content: `Tool calls: ${response.toolCalls.map((c) => c.name).join(', ')}`,
-            });
-            messages.push({
-                role: 'user',
-                content: `Tool results:\n${toolResults.join('\n')}`,
+        const messages = this.buildMessages(userMessage, history);
+        const { text, usage } = await runAgent({
+            model: this.model,
+            system: this.systemPrompt,
+            messages,
+            tools: this.tools,
+            maxSteps: MAX_TOOL_ROUNDS,
+        });
+        if (this.onUsage) {
+            this.onUsage({
+                model: getModelId(this.model),
+                inputTokens: usage.inputTokens,
+                outputTokens: usage.outputTokens,
             });
         }
-        return 'I reached the maximum number of tool call rounds. Please try rephrasing your request.';
+        return text;
+    }
+    buildMessages(userMessage, history) {
+        const messages = [];
+        if (history && history.length > 0) {
+            for (const m of history) {
+                const truncated = m.text.length > 500 ? m.text.slice(0, 500) + '...' : m.text;
+                messages.push({ role: m.role, content: truncated });
+            }
+        }
+        messages.push({ role: 'user', content: userMessage });
+        return messages;
     }
 }
 //# sourceMappingURL=assistant.js.map

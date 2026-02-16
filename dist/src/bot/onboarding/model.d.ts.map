@@ -1,0 +1,1 @@
+{"version":3,"file":"model.d.ts","sourceRoot":"","sources":["../../../../src/bot/onboarding/model.ts"],"names":[],"mappings":"AAGA,OAAO,KAAK,EAAE,iBAAiB,EAAE,GAAG,EAAE,MAAM,cAAc,CAAC;AAoB3D,wBAAsB,kBAAkB,CAAC,OAAO,EAAE,iBAAiB,EAAE,GAAG,EAAE,GAAG,GAAG,OAAO,CAAC,IAAI,CAAC,CA2B5F;AAED,wBAAsB,mBAAmB,CAAC,OAAO,EAAE,iBAAiB,EAAE,GAAG,EAAE,GAAG,GAAG,OAAO,CAAC,IAAI,CAAC,CAU7F"}
