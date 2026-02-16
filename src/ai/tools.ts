@@ -1,0 +1,552 @@
+import { tool } from 'ai';
+import { z } from 'zod/v4';
+import { existsSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
+import { pathToFileURL } from 'node:url';
+import type { ToolSet } from 'ai';
+import type { TaskRepository } from '../db/repository.js';
+import type { MessageRepository } from '../db/message-repository.js';
+import type { UsageRepository } from '../db/usage-repository.js';
+import type { ConfigManager } from '../core/config-manager.js';
+import type { AiConfig } from './model-factory.js';
+
+const GEOCODING_URL = 'https://geocoding-api.open-meteo.com/v1/search';
+const WEATHER_URL = 'https://api.open-meteo.com/v1/forecast';
+const MARINE_URL = 'https://marine-api.open-meteo.com/v1/marine';
+
+const ZARUKA_DIR = process.env.ZARUKA_DATA_DIR || join(homedir(), '.zaruka');
+const ENV_FILE = join(ZARUKA_DIR, '.env');
+
+interface GeoResult {
+  name: string;
+  latitude: number;
+  longitude: number;
+  country: string;
+}
+
+async function geocode(location: string): Promise<GeoResult | null> {
+  const url = `${GEOCODING_URL}?name=${encodeURIComponent(location)}&count=1&language=en`;
+  const res = await fetch(url);
+  const data = (await res.json()) as { results?: GeoResult[] };
+  return data.results?.[0] ?? null;
+}
+
+export interface ToolDeps {
+  taskRepo: TaskRepository;
+  messageRepo: MessageRepository;
+  usageRepo: UsageRepository;
+  configManager: ConfigManager;
+  skillsDir: string;
+  aiConfig: AiConfig;
+}
+
+export function createAllTools(deps: ToolDeps): ToolSet {
+  return {
+    ...createTaskTools(deps.taskRepo),
+    ...createWeatherTools(),
+    ...createWebTools(),
+    ...createResourceTools(),
+    ...createHistoryTools(deps.messageRepo),
+    ...createUsageTools(deps.usageRepo),
+    ...createCredentialTools(),
+    ...createExecuteSkillTools(deps.skillsDir),
+    ...createProfileTools(deps.configManager),
+  };
+}
+
+// === Task Tools ===
+
+function createTaskTools(repo: TaskRepository): ToolSet {
+  return {
+    create_task: tool({
+      description: 'Create a new task',
+      inputSchema: z.object({
+        title: z.string().describe('Task title'),
+        description: z.string().optional().describe('Task description'),
+        due_date: z.string().optional().describe('Due date in YYYY-MM-DD format'),
+      }),
+      execute: async (args) => {
+        const task = repo.create({
+          title: args.title,
+          description: args.description,
+          due_date: args.due_date,
+        });
+        return JSON.stringify({
+          success: true,
+          task: { id: task.id, title: task.title, due_date: task.due_date },
+        });
+      },
+    }),
+
+    list_tasks: tool({
+      description: 'List tasks, optionally filtered by status',
+      inputSchema: z.object({
+        status: z.enum(['active', 'completed']).optional().describe('Filter by status (default: all non-deleted)'),
+      }),
+      execute: async (args) => {
+        const tasks = repo.list(args.status);
+        if (tasks.length === 0) return JSON.stringify({ tasks: [], message: 'No tasks found' });
+        return JSON.stringify({
+          tasks: tasks.map((t) => ({
+            id: t.id, title: t.title, due_date: t.due_date, status: t.status,
+          })),
+        });
+      },
+    }),
+
+    complete_task: tool({
+      description: 'Mark a task as completed',
+      inputSchema: z.object({ id: z.number().describe('Task ID') }),
+      execute: async (args) => {
+        const task = repo.complete(args.id);
+        return JSON.stringify(task
+          ? { success: true, task: { id: task.id, title: task.title, status: task.status } }
+          : { success: false, error: 'Task not found' });
+      },
+    }),
+
+    delete_task: tool({
+      description: 'Delete a task',
+      inputSchema: z.object({ id: z.number().describe('Task ID') }),
+      execute: async (args) => JSON.stringify({ success: repo.delete(args.id) }),
+    }),
+
+    update_task: tool({
+      description: 'Update a task',
+      inputSchema: z.object({
+        id: z.number().describe('Task ID'),
+        title: z.string().optional().describe('New title'),
+        description: z.string().optional().describe('New description'),
+        due_date: z.string().optional().describe('New due date in YYYY-MM-DD format'),
+      }),
+      execute: async (args) => {
+        const { id, ...rest } = args;
+        const task = repo.update(id, rest as { title?: string; description?: string; due_date?: string });
+        return JSON.stringify(task
+          ? { success: true, task: { id: task.id, title: task.title, due_date: task.due_date } }
+          : { success: false, error: 'Task not found' });
+      },
+    }),
+  };
+}
+
+// === Weather Tools ===
+
+function createWeatherTools(): ToolSet {
+  return {
+    get_weather: tool({
+      description: 'Get weather forecast for a location',
+      inputSchema: z.object({
+        location: z.string().describe('City or place name'),
+        date: z.string().optional().describe('Date in YYYY-MM-DD format (optional, default: today)'),
+      }),
+      execute: async (args) => {
+        const geo = await geocode(args.location);
+        if (!geo) return JSON.stringify({ error: `Location "${args.location}" not found` });
+
+        const params = new URLSearchParams({
+          latitude: String(geo.latitude),
+          longitude: String(geo.longitude),
+          daily: 'temperature_2m_max,temperature_2m_min,precipitation_sum,wind_speed_10m_max,weathercode',
+          current: 'temperature_2m,relative_humidity_2m,wind_speed_10m,weathercode',
+          timezone: 'auto',
+          forecast_days: '7',
+        });
+
+        const res = await fetch(`${WEATHER_URL}?${params}`);
+        const data = (await res.json()) as Record<string, unknown>;
+
+        if (args.date) {
+          const daily = data.daily as Record<string, unknown[]>;
+          const idx = (daily.time as string[]).indexOf(args.date);
+          if (idx >= 0) {
+            return JSON.stringify({
+              location: `${geo.name}, ${geo.country}`,
+              date: args.date,
+              temperature_max: (daily.temperature_2m_max as number[])[idx],
+              temperature_min: (daily.temperature_2m_min as number[])[idx],
+              precipitation_mm: (daily.precipitation_sum as number[])[idx],
+              wind_speed_max_kmh: (daily.wind_speed_10m_max as number[])[idx],
+            });
+          }
+        }
+
+        return JSON.stringify({
+          location: `${geo.name}, ${geo.country}`,
+          current: data.current,
+          daily_forecast: data.daily,
+        });
+      },
+    }),
+
+    get_marine_conditions: tool({
+      description: 'Get marine/ocean conditions (wave height, period, direction) for a coastal location',
+      inputSchema: z.object({
+        location: z.string().describe('Coastal city or place name'),
+        date: z.string().optional().describe('Date in YYYY-MM-DD format (optional, default: today)'),
+      }),
+      execute: async (args) => {
+        const geo = await geocode(args.location);
+        if (!geo) return JSON.stringify({ error: `Location "${args.location}" not found` });
+
+        const params = new URLSearchParams({
+          latitude: String(geo.latitude),
+          longitude: String(geo.longitude),
+          daily: 'wave_height_max,wave_period_max,wave_direction_dominant',
+          timezone: 'auto',
+          forecast_days: '7',
+        });
+
+        const res = await fetch(`${MARINE_URL}?${params}`);
+        const data = (await res.json()) as Record<string, unknown>;
+
+        if (args.date) {
+          const daily = data.daily as Record<string, unknown[]>;
+          const idx = (daily.time as string[]).indexOf(args.date);
+          if (idx >= 0) {
+            return JSON.stringify({
+              location: `${geo.name}, ${geo.country}`,
+              date: args.date,
+              wave_height_max_m: (daily.wave_height_max as number[])[idx],
+              wave_period_max_s: (daily.wave_period_max as number[])[idx],
+              wave_direction: (daily.wave_direction_dominant as number[])[idx],
+            });
+          }
+        }
+
+        return JSON.stringify({
+          location: `${geo.name}, ${geo.country}`,
+          marine_forecast: data.daily,
+        });
+      },
+    }),
+  };
+}
+
+// === Web Tools ===
+
+const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+function stripHtml(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function createWebTools(): ToolSet {
+  return {
+    web_search: tool({
+      description: 'Search the web using DuckDuckGo. Returns URLs and text snippets. '
+        + 'Use this when you need current/up-to-date information: prices, services, news, documentation, etc.',
+      inputSchema: z.object({
+        query: z.string().describe('Search query'),
+      }),
+      execute: async (args) => {
+        try {
+          const resp = await fetch(
+            `https://html.duckduckgo.com/html/?q=${encodeURIComponent(args.query)}`,
+            { headers: { 'User-Agent': USER_AGENT }, signal: AbortSignal.timeout(15000) },
+          );
+          const html = await resp.text();
+
+          const results: { title: string; url: string; snippet: string }[] = [];
+
+          const uddgMatches = [...html.matchAll(/uddg=([^&"]+)/g)];
+          const rawUrls = uddgMatches
+            .map((m) => { try { return decodeURIComponent(m[1]); } catch { return ''; } })
+            .filter((u) => u.startsWith('http') && !u.includes('duckduckgo.com'));
+          const urls = [...new Set(rawUrls)].slice(0, 8);
+
+          const titleMatches = [...html.matchAll(/class="result__a"[^>]*>([\s\S]*?)<\//g)];
+          const snippetMatches = [...html.matchAll(/class="result__snippet"[^>]*>([\s\S]*?)<\//g)];
+
+          for (let i = 0; i < urls.length; i++) {
+            const title = titleMatches[i]
+              ? stripHtml(titleMatches[i][1]).slice(0, 200)
+              : '';
+            const snippet = snippetMatches[i]
+              ? stripHtml(snippetMatches[i][1]).slice(0, 300)
+              : '';
+            results.push({ title, url: urls[i], snippet });
+          }
+
+          return JSON.stringify({ results });
+        } catch (err) {
+          return JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
+        }
+      },
+    }),
+
+    web_fetch: tool({
+      description: 'Fetch a web page and return its text content (HTML tags stripped). '
+        + 'Use this to read documentation, articles, or any web page after finding URLs via web_search.',
+      inputSchema: z.object({
+        url: z.string().describe('URL to fetch'),
+      }),
+      execute: async (args) => {
+        try {
+          const resp = await fetch(args.url, {
+            headers: { 'User-Agent': USER_AGENT },
+            signal: AbortSignal.timeout(15000),
+            redirect: 'follow',
+          });
+          if (!resp.ok) return JSON.stringify({ error: `HTTP ${resp.status}` });
+
+          const contentType = resp.headers.get('content-type') || '';
+          if (!contentType.includes('text/html') && !contentType.includes('text/plain') && !contentType.includes('application/json')) {
+            return JSON.stringify({ error: `Unsupported content type: ${contentType}` });
+          }
+
+          const body = await resp.text();
+          const text = stripHtml(body).slice(0, 8000);
+          return JSON.stringify({ url: args.url, content: text });
+        } catch (err) {
+          return JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
+        }
+      },
+    }),
+  };
+}
+
+// === Resource Tools ===
+
+function createResourceTools(): ToolSet {
+  return {
+    get_system_resources: tool({
+      description: 'Get current system resource usage (CPU, RAM, disk). Use when the user asks about system status, performance, or resources.',
+      inputSchema: z.object({}),
+      execute: async () => {
+        const { getResourceSnapshot } = await import('../monitor/resources.js');
+        const snapshot = await getResourceSnapshot();
+        return JSON.stringify(snapshot);
+      },
+    }),
+
+    check_installation_feasibility: tool({
+      description: 'Check if the system has enough disk space and RAM for an installation (e.g. AI model, software package)',
+      inputSchema: z.object({
+        required_disk_gb: z.number().describe('Required free disk space in GB'),
+        required_ram_gb: z.number().describe('Required free RAM in GB'),
+      }),
+      execute: async (args) => {
+        const { checkInstallationFeasibility } = await import('../monitor/resources.js');
+        const result = checkInstallationFeasibility(args.required_disk_gb, args.required_ram_gb);
+        return JSON.stringify(result);
+      },
+    }),
+  };
+}
+
+// === History Tools ===
+
+function createHistoryTools(messageRepo: MessageRepository): ToolSet {
+  return {
+    search_conversation_history: tool({
+      description: 'Search through past conversation history. Use this when the user asks about previous conversations, '
+        + 'e.g. "what did I ask about last week?", "find our conversation about X", "what did you recommend for Y?"',
+      inputSchema: z.object({
+        query: z.string().describe('Search text to find in past messages'),
+        limit: z.number().optional().describe('Max results to return (default 10)'),
+      }),
+      execute: async (args) => {
+        const results = messageRepo.searchAll(args.query, args.limit || 10);
+        if (results.length === 0) return JSON.stringify({ found: 0, message: 'No messages found matching the query.' });
+        const formatted = results.map((m) => ({
+          role: m.role,
+          text: m.text.length > 300 ? m.text.slice(0, 300) + '...' : m.text,
+          date: m.created_at,
+        }));
+        return JSON.stringify({ found: results.length, messages: formatted });
+      },
+    }),
+
+    get_conversation_stats: tool({
+      description: 'Get statistics about conversation history: total messages, date range, etc. '
+        + 'Use when user asks "how many messages have we exchanged?", "when did we first talk?", etc.',
+      inputSchema: z.object({
+        chat_id: z.number().optional().describe('Chat ID (omit for overall stats)'),
+      }),
+      execute: async (args) => {
+        if (args.chat_id) return JSON.stringify(messageRepo.getStats(args.chat_id));
+        const disk = messageRepo.getDiskUsage();
+        return JSON.stringify({ ...disk, note: 'Provide chat_id for per-chat stats' });
+      },
+    }),
+  };
+}
+
+// === Usage Tools ===
+
+function createUsageTools(usageRepo: UsageRepository): ToolSet {
+  return {
+    get_api_usage: tool({
+      description: 'Get API token usage statistics (today and this month). Use when user asks about costs, spending, tokens, usage, how much they\'ve used, etc.',
+      inputSchema: z.object({
+        period: z.enum(['today', 'month']).optional().describe('Period to query (default: both)'),
+      }),
+      execute: async (args) => {
+        const today = usageRepo.getToday();
+        const month = usageRepo.getMonth();
+        if (args.period === 'today') return JSON.stringify({ period: 'today', ...today });
+        if (args.period === 'month') return JSON.stringify({ period: 'month', ...month });
+        return JSON.stringify({ today, month });
+      },
+    }),
+  };
+}
+
+// === Profile Tool ===
+
+function createProfileTools(configManager: ConfigManager): ToolSet {
+  return {
+    save_user_profile: tool({
+      description: 'Save user profile information (name, city, birthday). Call this when the user tells you their name, city, or birthday during the initial conversation. '
+        + 'You can call this multiple times — each call merges new fields with the existing profile.',
+      inputSchema: z.object({
+        name: z.string().optional().describe('User\'s preferred name'),
+        city: z.string().optional().describe('User\'s city of residence'),
+        birthday: z.string().optional().describe('User\'s birthday in MM-DD format (e.g. "03-15" for March 15)'),
+      }),
+      execute: async (args) => {
+        const profile: { name?: string; city?: string; timezone?: string; birthday?: string } = {};
+
+        if (args.name) profile.name = args.name;
+        if (args.birthday) profile.birthday = args.birthday;
+
+        if (args.city) {
+          profile.city = args.city;
+          // Resolve timezone from city name
+          try {
+            const resp = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(args.city)}&count=1&language=en`);
+            if (resp.ok) {
+              const data = await resp.json() as { results?: { name: string; timezone: string }[] };
+              if (data.results?.length) {
+                profile.city = data.results[0].name;
+                profile.timezone = data.results[0].timezone;
+                configManager.updateTimezone(data.results[0].timezone);
+              }
+            }
+          } catch { /* timezone resolution is best-effort */ }
+        }
+
+        if (Object.keys(profile).length > 0) {
+          configManager.updateProfile(profile);
+        }
+
+        return JSON.stringify({ success: true, saved: profile });
+      },
+    }),
+  };
+}
+
+// === Credential Tool ===
+
+function createCredentialTools(): ToolSet {
+  return {
+    save_credential: tool({
+      description: 'Save a user-provided credential (API key, token, login, password) so it can be used by skills. '
+        + 'The credential is stored securely and available immediately. '
+        + 'Use SCREAMING_SNAKE_CASE for the name (e.g. FREEDOM_FINANCE_API_KEY).',
+      inputSchema: z.object({
+        name: z.string().describe('Environment variable name in SCREAMING_SNAKE_CASE (e.g. FREEDOM_FINANCE_API_KEY)'),
+        value: z.string().describe('The credential value to save'),
+      }),
+      execute: async (args) => {
+        const { name, value } = args;
+
+        if (!/^[A-Z][A-Z0-9_]*$/.test(name)) {
+          return JSON.stringify({ error: 'Invalid name. Use SCREAMING_SNAKE_CASE (e.g. MY_API_KEY)' });
+        }
+
+        process.env[name] = value;
+
+        try {
+          let lines: string[] = [];
+          if (existsSync(ENV_FILE)) {
+            lines = readFileSync(ENV_FILE, 'utf-8').split('\n');
+          }
+
+          const prefix = `${name}=`;
+          const existingIdx = lines.findIndex((l) => l.startsWith(prefix));
+          if (existingIdx !== -1) {
+            lines[existingIdx] = `${name}=${value}`;
+          } else {
+            while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
+            lines.push(`${name}=${value}`);
+          }
+
+          writeFileSync(ENV_FILE, lines.join('\n') + '\n', { mode: 0o600 });
+
+          return JSON.stringify({
+            success: true, name,
+            message: `Credential ${name} saved and available immediately.`,
+          });
+        } catch (err) {
+          return JSON.stringify({
+            success: true, name,
+            message: `Credential ${name} set for this session (file save failed: ${err}).`,
+          });
+        }
+      },
+    }),
+  };
+}
+
+// === Execute Dynamic Skill Tool ===
+
+function createExecuteSkillTools(skillsDir: string): ToolSet {
+  return {
+    execute_dynamic_skill: tool({
+      description: 'Execute a dynamically created skill tool by name. Use this to call skills that were just created by evolve_skill, '
+        + 'or to retry a failed skill call. This loads the latest version of the skill from disk.',
+      inputSchema: z.object({
+        tool_name: z.string().describe('Name of the tool to execute (e.g. "get_freedom_finance_positions")'),
+        args: z.record(z.string(), z.unknown()).optional().describe('Arguments to pass to the tool (key-value pairs)'),
+      }),
+      execute: async (input) => {
+        if (!existsSync(skillsDir)) {
+          return JSON.stringify({ error: 'No skills directory found' });
+        }
+
+        const files = readdirSync(skillsDir).filter((f) => f.endsWith('.js') || f.endsWith('.mjs'));
+
+        for (const file of files) {
+          try {
+            const fullPath = join(skillsDir, file);
+            const mod = await import(pathToFileURL(fullPath).href + `?t=${Date.now()}`);
+            const toolsMap = mod.tools as Record<string, { execute?: (args: unknown) => Promise<unknown> }> | undefined;
+
+            if (toolsMap && typeof toolsMap === 'object') {
+              const found = toolsMap[input.tool_name];
+              if (found && typeof found.execute === 'function') {
+                const result = await found.execute(input.args || {});
+                return typeof result === 'string' ? result : JSON.stringify(result);
+              }
+            }
+          } catch (err) {
+            console.error(`execute_dynamic_skill: error loading ${file}:`, err instanceof Error ? err.message : err);
+            continue;
+          }
+        }
+
+        // Not found — list available
+        const available: string[] = [];
+        for (const file of files) {
+          try {
+            const fullPath = join(skillsDir, file);
+            const mod = await import(pathToFileURL(fullPath).href + `?t=${Date.now()}`);
+            if (mod.tools && typeof mod.tools === 'object') {
+              available.push(...Object.keys(mod.tools));
+            }
+          } catch { /* skip broken files */ }
+        }
+
+        return JSON.stringify({ error: `Tool "${input.tool_name}" not found`, available_tools: available });
+      },
+    }),
+  };
+}
