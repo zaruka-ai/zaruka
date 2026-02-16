@@ -50,12 +50,12 @@ jobs:
             echo ""
             echo ""
             echo "=== FILES CHANGED ==="
-            git diff "$RANGE" --stat
+            git diff "$RANGE" --stat -- ':!dist/**' ':!package-lock.json' | head -40
 
             echo ""
             echo ""
             echo "=== CODE CHANGES ==="
-            git diff "$RANGE" -- '*.ts' '*.json' ':!package-lock.json' | head -500
+            git diff "$RANGE" -- '*.ts' '*.json' ':!package-lock.json' ':!dist/**' | head -200
           } > /tmp/changes.txt
 
       - name: Generate changelog with AI
