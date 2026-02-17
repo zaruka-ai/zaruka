@@ -86,6 +86,9 @@ export const UI_STRINGS = {
   'cmd.cancel_threshold': '❌ Cancelled. Threshold not changed.',
   'cmd.cancel_nothing': 'Nothing to cancel.',
 
+  // Long task notification
+  'processing.working': '⏳ Working on it…',
+
   // Errors
   'error.no_ai': 'AI is not configured yet. Send /start to set up.',
   'error.voice_transcribe': 'Could not transcribe the voice message. Please try again.',

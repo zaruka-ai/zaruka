@@ -169,6 +169,10 @@ function buildSystemPrompt(
     'Use the available tools for tasks, weather, shell commands, etc.',
     'When creating tasks with due dates, parse natural language dates relative to the current date.',
     '',
+    'CONTEXT RECALL: You see the last 30 messages. If the user refers to something you don\'t see in context '
+    + '(e.g. "ты же знаешь", "как мы обсуждали", "продолжай"), call search_conversation_history to find the relevant earlier messages. '
+    + 'NEVER say you don\'t have context or ask the user to repeat — search for it first.',
+    '',
     'CRITICAL RULES (follow in this exact order of priority):',
     '',
     '1. HONESTY ABOUT CAPABILITIES (HIGHEST PRIORITY — overrides ALL other rules):',

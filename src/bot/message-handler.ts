@@ -24,6 +24,7 @@ export function registerHandlers(bot: Telegraf, ctx: BotContext): void {
       tCtx,
       `[Continue in ${lang}]\nShow more options. Use web_search to find additional image generation services that you haven't mentioned yet.`,
       ctx,
+      lang,
     );
   });
 
@@ -71,7 +72,8 @@ export function registerHandlers(bot: Telegraf, ctx: BotContext): void {
       message = `[Continue in ${ctx.lastLanguage.get(chatId)}]\n${text}`;
     }
 
-    processAndReply(tCtx, message, ctx).catch((err) => console.error('Text handler error:', err));
+    const lang = detected || ctx.lastLanguage.get(chatId);
+    processAndReply(tCtx, message, ctx, lang).catch((err) => console.error('Text handler error:', err));
   });
 }
 
@@ -153,7 +155,8 @@ async function handleVoice(tCtx: any, ctx: BotContext): Promise<void> {
       return;
     }
     const duration = tCtx.message.voice.duration;
-    await processAndReply(tCtx, `[The user sent a voice message (${duration}s). It has been automatically transcribed below. Reply to the content naturally, as if the user typed it.]\n${text}`, ctx);
+    const voiceLang = detectLanguage(text) || ctx.lastLanguage.get(tCtx.chat.id);
+    await processAndReply(tCtx, `[The user sent a voice message (${duration}s). It has been automatically transcribed below. Reply to the content naturally, as if the user typed it.]\n${text}`, ctx, voiceLang);
   } catch (err) {
     console.error('Error processing voice message:', err);
     await tCtx.reply(t(ctx.configManager, 'error.voice_failed'));
@@ -161,12 +164,79 @@ async function handleVoice(tCtx: any, ctx: BotContext): Promise<void> {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function processAndReply(tCtx: any, userMessage: string, ctx: BotContext): Promise<void> {
+const NOTIFY_DELAY_MS = 8_000;    // Tell the user we're working after 8 s
+
+
+/**
+ * Pool of AI-generated "working on it" messages per language.
+ * Generated once on first use, then served from cache.
+ */
+const workingPool = new Map<string, string[]>();
+const pendingGen = new Set<string>();
+
+function pickWorkingMessage(lang: string): string {
+  const pool = workingPool.get(lang);
+  if (pool && pool.length > 0) {
+    return pool[Math.floor(Math.random() * pool.length)];
+  }
+  return '⏳…';
+}
+
+/** Generate a pool of "working" messages for a language (fire-and-forget). */
+function ensureWorkingPool(lang: string, ctx: BotContext): void {
+  if (workingPool.has(lang) || pendingGen.has(lang)) return;
+  const assistant = ctx.getAssistant();
+  if (!assistant) return;
+
+  pendingGen.add(lang);
+  assistant.process(
+    `[SYSTEM — not a user message, no greeting, no conversation]\n`
+    + `Generate 20 short (2-5 words each) status messages in ${lang} meaning "I'm busy working on your request, please wait". `
+    + `The tone: playful, warm, varied (e.g. short phrases like "working on it…", "one moment…", "almost there…" but in ${lang}). `
+    + `Each starts with one emoji. All different. One per line, no numbering, no quotes — ONLY the messages.`,
+  ).then((text) => {
+    const lines = text.split('\n').map((l) => l.trim()).filter((l) => l.length > 1 && l.length < 60);
+    if (lines.length >= 5) {
+      workingPool.set(lang, lines);
+      console.log(`Generated ${lines.length} working messages for ${lang}`);
+    }
+  }).catch(() => {
+    // Will retry on next message
+  }).finally(() => {
+    pendingGen.delete(lang);
+  });
+}
+
+/** Track how many AI calls are active per chat. */
+const activeTasks = new Map<number, number>();
+
+async function processAndReply(tCtx: any, userMessage: string, ctx: BotContext, msgLang?: string): Promise<void> {
   const chatId: number = tCtx.chat.id;
   console.log(`[chat:${chatId}] User: ${userMessage.slice(0, 100)}${userMessage.length > 100 ? '...' : ''}`);
 
-  const recentMessages = ctx.messageRepo.getRecent(chatId, 20);
+  // Save user message immediately
+  ctx.messageRepo.save(chatId, 'user', userMessage);
+
+  const lang = msgLang || 'English';
+  ensureWorkingPool(lang, ctx);
+
+  // Build history; if another task is already running, hint AI not to repeat it
+  const recentMessages = ctx.messageRepo.getRecent(chatId, 30);
   const history: ChatMessage[] = recentMessages.map((m) => ({ role: m.role, text: m.text }));
+  const busy = (activeTasks.get(chatId) ?? 0) > 0;
+  const message = busy
+    ? `[CONTEXT: A previous request is still being processed in the background. `
+      + `Do NOT repeat, redo, or continue that task. Answer this new message directly and briefly.]\n${userMessage}`
+    : userMessage;
+
+  activeTasks.set(chatId, (activeTasks.get(chatId) ?? 0) + 1);
+
+  // "Still working" notification for every message that takes > 8s
+  const notifyTimer = setTimeout(async () => {
+    try {
+      await tCtx.reply(pickWorkingMessage(lang));
+    } catch { /* ignore */ }
+  }, NOTIFY_DELAY_MS);
 
   const typingInterval = setInterval(() => {
     tCtx.sendChatAction('typing').catch(() => {});
@@ -174,12 +244,14 @@ async function processAndReply(tCtx: any, userMessage: string, ctx: BotContext):
 
   try {
     await tCtx.sendChatAction('typing');
-    const response = await ctx.getAssistant()!.process(userMessage, history);
+    const response = await ctx.getAssistant()!.process(message, history);
+    clearTimeout(notifyTimer);
     clearInterval(typingInterval);
-    console.log(`[chat:${chatId}] Assistant: ${response.slice(0, 100)}${response.length > 100 ? '...' : ''}`);
 
-    ctx.messageRepo.save(chatId, 'user', userMessage);
-    if (response) {
+    if (!response) {
+      console.warn(`[chat:${chatId}] Assistant returned empty response for: ${userMessage.slice(0, 60)}`);
+    } else {
+      console.log(`[chat:${chatId}] Assistant: ${response.slice(0, 100)}${response.length > 100 ? '...' : ''}`);
       ctx.messageRepo.save(chatId, 'assistant', response);
     }
 
@@ -204,11 +276,21 @@ async function processAndReply(tCtx: any, userMessage: string, ctx: BotContext):
       }
     }
   } catch (err) {
+    clearTimeout(notifyTimer);
     clearInterval(typingInterval);
     console.error('Error processing message:', err);
 
+    // Walk the error chain to find rate-limit info (RetryError → APICallError)
     const errorMsg = err instanceof Error ? err.message : String(err);
-    const isRateLimit = /rate.?limit|quota|limit exceeded|429|RESOURCE_EXHAUSTED/i.test(errorMsg);
+    let fullErrorText = errorMsg;
+    if (err instanceof Error) {
+      const e = err as Error & { lastError?: Error; responseBody?: string; statusCode?: number };
+      if (e.lastError instanceof Error) fullErrorText += ' ' + e.lastError.message;
+      if (e.cause instanceof Error) fullErrorText += ' ' + (e.cause as Error).message;
+      if (e.responseBody) fullErrorText += ' ' + e.responseBody;
+      if (e.statusCode) fullErrorText += ' ' + e.statusCode;
+    }
+    const isRateLimit = /rate.?limit|quota|limit exceeded|429|RESOURCE_EXHAUSTED/i.test(fullErrorText);
 
     if (isRateLimit) {
       const config = ctx.configManager.getConfig();
@@ -216,5 +298,9 @@ async function processAndReply(tCtx: any, userMessage: string, ctx: BotContext):
     } else {
       await tCtx.reply(t(ctx.configManager, 'error.processing'));
     }
+  } finally {
+    const count = (activeTasks.get(chatId) ?? 1) - 1;
+    if (count <= 0) activeTasks.delete(chatId);
+    else activeTasks.set(chatId, count);
   }
 }

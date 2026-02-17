@@ -61,7 +61,7 @@ export class Assistant {
 
     if (history && history.length > 0) {
       for (const m of history) {
-        const truncated = m.text.length > 500 ? m.text.slice(0, 500) + '...' : m.text;
+        const truncated = m.text.length > 1000 ? m.text.slice(0, 1000) + '...' : m.text;
         messages.push({ role: m.role, content: truncated });
       }
     }
