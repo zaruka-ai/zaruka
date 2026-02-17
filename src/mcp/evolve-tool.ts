@@ -32,35 +32,70 @@ async function preResearch(description: string): Promise<{ urls: string[]; snipp
 
   const searchQuery = description.slice(0, 100) + ' API documentation authorization';
 
-  try {
+  const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+  // Try Brave first (fast), fall back to DuckDuckGo
+  let foundUrls = false;
+  const searchFns: Array<() => Promise<void>> = [];
+
+  if (process.env.BRAVE_API_KEY) {
+    searchFns.push(async () => {
+      const bUrl = new URL('https://api.search.brave.com/res/v1/web/search');
+      bUrl.searchParams.set('q', searchQuery);
+      bUrl.searchParams.set('count', '10');
+
+      let lastErr: Error | null = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (attempt > 0) await new Promise((r) => setTimeout(r, attempt * 1500));
+        const resp = await fetch(bUrl.toString(), {
+          headers: { 'Accept': 'application/json', 'X-Subscription-Token': process.env.BRAVE_API_KEY! },
+          signal: AbortSignal.timeout(10000),
+        });
+        if (resp.status === 429) { lastErr = new Error('Brave API: 429'); continue; }
+        if (!resp.ok) throw new Error(`Brave API: ${resp.status}`);
+        const data = await resp.json() as { web?: { results?: Array<{ url: string; description?: string }> } };
+        for (const r of (data.web?.results ?? []).slice(0, 10)) {
+          urls.push(r.url);
+          if (r.description && r.description.length > 20) snippets.push(r.description);
+        }
+        return;
+      }
+      throw lastErr ?? new Error('Brave API: max retries');
+    });
+  }
+
+  searchFns.push(async () => {
     const resp = await fetch(
       `https://html.duckduckgo.com/html/?q=${encodeURIComponent(searchQuery)}`,
-      {
-        headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' },
-        signal: AbortSignal.timeout(15000),
-      },
+      { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(10000) },
     );
     const html = await resp.text();
-
     const uddgMatches = [...html.matchAll(/uddg=([^&"]+)/g)];
     const rawUrls = uddgMatches
       .map((m) => { try { return decodeURIComponent(m[1]); } catch { return ''; } })
       .filter((u) => u.startsWith('http') && !u.includes('duckduckgo.com'));
     urls.push(...[...new Set(rawUrls)].slice(0, 10));
-
     const snippetMatches = [...html.matchAll(/class="result__snippet"[^>]*>([\s\S]*?)<\//g)];
     for (const m of snippetMatches.slice(0, 5)) {
       const text = m[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
       if (text.length > 20) snippets.push(text);
     }
-  } catch (err) {
-    console.log('Pre-research search failed:', err);
+  });
+
+  for (const searchFn of searchFns) {
+    try {
+      await searchFn();
+      if (urls.length > 0) { foundUrls = true; break; }
+    } catch (err) {
+      console.log(`Pre-research provider failed: ${err instanceof Error ? err.message : err}`);
+    }
   }
+  if (!foundUrls) console.log('Pre-research: all search providers failed');
 
   for (const url of urls.slice(0, 3)) {
     try {
       const resp = await fetch(url, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' },
+        headers: { 'User-Agent': UA },
         signal: AbortSignal.timeout(10000),
         redirect: 'follow',
       });
@@ -86,6 +121,9 @@ async function preResearch(description: string): Promise<{ urls: string[]; snipp
   return { urls, snippets, pages };
 }
 
+/** Track in-progress evolve_skill calls to prevent duplicates. */
+const evolvingSkills = new Set<string>();
+
 /** Create the evolve_skill tool with Vercel AI SDK inner agent. */
 export function createEvolveTool(skillsDir: string, aiConfig: AiConfig): Tool {
   return tool({
@@ -95,6 +133,14 @@ export function createEvolveTool(skillsDir: string, aiConfig: AiConfig): Tool {
       description: z.string().describe('Detailed description of what the skill should do, including expected inputs and outputs'),
     }),
     execute: async (args) => {
+      // Prevent duplicate parallel calls for the same skill
+      if (evolvingSkills.has(args.skill_name)) {
+        return JSON.stringify({
+          success: false,
+          error: 'in_progress',
+          message: `Skill "${args.skill_name}" is already being created. Wait for it to finish, then use execute_dynamic_skill to call it.`,
+        });
+      }
       // Reject skills for native model capabilities — enforce in code, not just prompts
       const nativeKeywords = /\b(image.generat|generat.*image|dall.?e|midjourney|stable.diffusion|text.to.image|text.to.speech|text.to.video|text.to.audio|speech.synth|voice.generat|video.generat|audio.generat|tts\b|stt\b)/i;
       const combined = `${args.skill_name} ${args.description}`;
@@ -109,6 +155,8 @@ export function createEvolveTool(skillsDir: string, aiConfig: AiConfig): Tool {
         });
       }
 
+      evolvingSkills.add(args.skill_name);
+      try {
       if (!existsSync(skillsDir)) {
         mkdirSync(skillsDir, { recursive: true });
       }
@@ -311,6 +359,9 @@ export function createEvolveTool(skillsDir: string, aiConfig: AiConfig): Tool {
             + 'If credentials are needed, ask naturally and provide the real URLs from auth_info.'
           : `Setup failed: ${resultText}. Try a different approach or inform the user.`,
       });
+      } finally {
+        evolvingSkills.delete(args.skill_name);
+      }
     },
   });
 }
