@@ -91,6 +91,14 @@ export class TaskRepository {
         this.db.prepare(`UPDATE tasks SET ${fields.join(', ')} WHERE id = @id`).run(values);
         return this.getById(id);
     }
+    pause(id) {
+        this.db.prepare("UPDATE tasks SET status = 'paused', updated_at = datetime('now') WHERE id = ?").run(id);
+        return this.getById(id);
+    }
+    resume(id) {
+        this.db.prepare("UPDATE tasks SET status = 'active', updated_at = datetime('now') WHERE id = ?").run(id);
+        return this.getById(id);
+    }
     delete(id) {
         const result = this.db.prepare("UPDATE tasks SET status = 'deleted', updated_at = datetime('now') WHERE id = ?").run(id);
         return result.changes > 0;

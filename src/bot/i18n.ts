@@ -136,6 +136,12 @@ export function t(cm: ConfigManager, key: UIKey, params?: Record<string, string>
   return str.replace(/\{(\w+)\}/g, (_, k) => params[k] ?? `{${k}}`);
 }
 
+/** Check if the cached translations cover all current UI_STRINGS keys. */
+export function translationCacheComplete(cm: ConfigManager): boolean {
+  const keys = Object.keys(UI_STRINGS);
+  return keys.every((k) => cm.getTranslation(k) !== undefined);
+}
+
 /**
  * Translate all UI strings to the given language using the AI model.
  * Returns a map of key → translated string.
