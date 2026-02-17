@@ -7,6 +7,9 @@ chown -R node:node /home/node/.claude
 mkdir -p /data
 chown -R node:node /data
 
+# Ensure node_modules is writable — libraries may create caches inside their own dirs
+chown -R node:node /app/node_modules
+
 # Drop privileges and run the main command as node
 export HOME=/home/node
 exec setpriv --reuid=node --regid=node --init-groups "$@"
