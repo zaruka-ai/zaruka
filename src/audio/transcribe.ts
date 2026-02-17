@@ -1,5 +1,7 @@
-import { pipeline } from '@huggingface/transformers';
 import type { Transcriber } from '../bot/telegram.js';
+
+const WHISPER_MODEL_NAME = 'sherpa-onnx-whisper-small';
+const WHISPER_MODEL_URL = `https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/${WHISPER_MODEL_NAME}.tar.bz2`;
 
 export async function createTranscriber(opts: {
   openaiApiKey?: string;
@@ -18,10 +20,10 @@ export async function createTranscriber(opts: {
     return createCloudTranscriber(opts.groqApiKey, 'whisper-large-v3', 'https://api.groq.com/openai/v1');
   }
 
-  // 3. Local Whisper via @huggingface/transformers (free, offline)
+  // 3. Local Whisper via sherpa-onnx (free, offline)
   const local = await createLocalTranscriber();
   if (local) {
-    console.log('Voice transcription: local Whisper');
+    console.log('Voice transcription: local Whisper (whisper-small, sherpa-onnx)');
     return local;
   }
 
@@ -42,8 +44,47 @@ async function createCloudTranscriber(apiKey: string, model: string, baseUrl?: s
   };
 }
 
+async function ensureModel(modelsDir: string): Promise<string> {
+  const { existsSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const { mkdir } = await import('node:fs/promises');
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const execFileAsync = promisify(execFile);
+
+  const modelDir = join(modelsDir, WHISPER_MODEL_NAME);
+
+  if (existsSync(join(modelDir, 'small-tokens.txt'))) {
+    return modelDir;
+  }
+
+  await mkdir(modelsDir, { recursive: true });
+
+  const archivePath = join(modelsDir, `${WHISPER_MODEL_NAME}.tar.bz2`);
+
+  console.log(`Downloading Whisper model (~610 MB)...`);
+  const startTime = Date.now();
+  const heartbeat = setInterval(() => {
+    const elapsed = Math.round((Date.now() - startTime) / 1000);
+    console.log(`  Still downloading... (${elapsed}s)`);
+  }, 30_000);
+
+  try {
+    await execFileAsync('curl', ['-L', '-o', archivePath, WHISPER_MODEL_URL], { timeout: 600_000 });
+    console.log('Download complete. Extracting...');
+    await execFileAsync('tar', ['-xjf', archivePath, '-C', modelsDir], { timeout: 120_000 });
+    // Clean up archive
+    const { unlink } = await import('node:fs/promises');
+    await unlink(archivePath).catch(() => {});
+    console.log('Whisper model ready.');
+  } finally {
+    clearInterval(heartbeat);
+  }
+
+  return modelDir;
+}
+
 async function createLocalTranscriber(): Promise<Transcriber | undefined> {
-  // Check ffmpeg availability (required for audio conversion)
   const { execFile } = await import('node:child_process');
   const { promisify } = await import('node:util');
   const execFileAsync = promisify(execFile);
@@ -55,26 +96,50 @@ async function createLocalTranscriber(): Promise<Transcriber | undefined> {
     return undefined;
   }
 
-  const { writeFile, readFile, unlink } = await import('node:fs/promises');
+  const { writeFile, unlink } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
   const { randomUUID } = await import('node:crypto');
 
+  // Determine cache directory (XDG_CACHE_HOME or ~/.cache)
+  const cacheDir = process.env.XDG_CACHE_HOME || join(process.env.HOME || '/tmp', '.cache');
+  const modelsDir = join(cacheDir, 'sherpa-onnx-models');
+
+  console.log('Loading Whisper model (sherpa-onnx, ~610 MB download on first run)...');
+  const modelDir = await ensureModel(modelsDir);
+
+  // sherpa-onnx-node is a native CJS addon — use createRequire for ESM compatibility
+  const { createRequire } = await import('node:module');
+  const require = createRequire(import.meta.url);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let pipelineInstance: any = null;
+  let sherpa: any;
+  try {
+    sherpa = require('sherpa-onnx-node');
+  } catch {
+    console.log('sherpa-onnx-node is not installed.');
+    return undefined;
+  }
+
+  const recognizer = new sherpa.OfflineRecognizer({
+    featConfig: {
+      sampleRate: 16000,
+      featureDim: 80,
+    },
+    modelConfig: {
+      whisper: {
+        encoder: join(modelDir, 'small-encoder.int8.onnx'),
+        decoder: join(modelDir, 'small-decoder.int8.onnx'),
+      },
+      tokens: join(modelDir, 'small-tokens.txt'),
+      numThreads: 2,
+      provider: 'cpu',
+      debug: 0,
+    },
+  });
+
+  console.log('Whisper model loaded.');
 
   return async (fileUrl: string) => {
-    // Lazy-load model on first call
-    if (!pipelineInstance) {
-      console.log('Loading Whisper model (first time, ~75MB download)...');
-      pipelineInstance = await pipeline(
-        'automatic-speech-recognition',
-        'onnx-community/whisper-tiny',
-      );
-      console.log('Whisper model loaded.');
-    }
-
-    // Download audio from Telegram
     const res = await fetch(fileUrl);
     const buffer = Buffer.from(await res.arrayBuffer());
 
@@ -94,39 +159,15 @@ async function createLocalTranscriber(): Promise<Transcriber | undefined> {
         '-y', tempWav,
       ]);
 
-      // Read WAV and extract PCM samples as Float32Array
-      const wavBuffer = await readFile(tempWav);
-      const pcmData = parseWavToFloat32(wavBuffer);
-
-      const result = await pipelineInstance(pcmData);
-      return (result as { text: string }).text || '';
+      const wave = sherpa.readWave(tempWav);
+      const stream = recognizer.createStream();
+      stream.acceptWaveform({ sampleRate: wave.sampleRate, samples: wave.samples });
+      recognizer.decode(stream);
+      const result = recognizer.getResult(stream);
+      return result.text || '';
     } finally {
       await unlink(tempOgg).catch(() => {});
       await unlink(tempWav).catch(() => {});
     }
   };
-}
-
-function parseWavToFloat32(wavBuffer: Buffer): Float32Array {
-  // Standard WAV: 44-byte header, then 16-bit PCM samples
-  // Find the 'data' chunk for robustness
-  let dataOffset = 44;
-  for (let i = 12; i < wavBuffer.length - 8; i++) {
-    if (
-      wavBuffer[i] === 0x64 && // 'd'
-      wavBuffer[i + 1] === 0x61 && // 'a'
-      wavBuffer[i + 2] === 0x74 && // 't'
-      wavBuffer[i + 3] === 0x61 // 'a'
-    ) {
-      dataOffset = i + 8; // skip 'data' + 4-byte size
-      break;
-    }
-  }
-
-  const numSamples = (wavBuffer.length - dataOffset) / 2;
-  const samples = new Float32Array(numSamples);
-  for (let i = 0; i < numSamples; i++) {
-    samples[i] = wavBuffer.readInt16LE(dataOffset + i * 2) / 32768;
-  }
-  return samples;
 }

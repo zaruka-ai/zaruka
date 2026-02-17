@@ -47,6 +47,7 @@ export function createAllTools(deps: ToolDeps): ToolSet {
     ...createWeatherTools(),
     ...createWebTools(),
     ...createResourceTools(),
+    ...createShellTools(),
     ...createHistoryTools(deps.messageRepo),
     ...createUsageTools(deps.usageRepo),
     ...createCredentialTools(),
@@ -336,6 +337,89 @@ function createResourceTools(): ToolSet {
         const { checkInstallationFeasibility } = await import('../monitor/resources.js');
         const result = checkInstallationFeasibility(args.required_disk_gb, args.required_ram_gb);
         return JSON.stringify(result);
+      },
+    }),
+  };
+}
+
+// === Shell Tools ===
+
+function createShellTools(): ToolSet {
+  return {
+    run_shell_command: tool({
+      description:
+        'Execute a shell command on the server and return its output. '
+        + 'Use this to install packages, manage files, run scripts, check system state, etc. '
+        + 'Commands run as the current process user with a 60-second timeout.',
+      inputSchema: z.object({
+        command: z.string().describe('The shell command to execute (e.g. "apt-get install -y ffmpeg", "ls -la /data")'),
+      }),
+      execute: async (args) => {
+        const { exec } = await import('node:child_process');
+        const { promisify } = await import('node:util');
+        const execAsync = promisify(exec);
+
+        try {
+          const { stdout, stderr } = await execAsync(args.command, {
+            timeout: 60_000,
+            maxBuffer: 1024 * 1024,
+            env: { ...process.env, DEBIAN_FRONTEND: 'noninteractive' },
+          });
+          const output = (stdout || '').trim();
+          const errors = (stderr || '').trim();
+          return JSON.stringify({
+            success: true,
+            ...(output ? { stdout: output.slice(0, 10_000) } : {}),
+            ...(errors ? { stderr: errors.slice(0, 5_000) } : {}),
+          });
+        } catch (err) {
+          const e = err as { code?: number; stdout?: string; stderr?: string; message?: string };
+          return JSON.stringify({
+            success: false,
+            exit_code: e.code,
+            stdout: (e.stdout || '').trim().slice(0, 5_000) || undefined,
+            stderr: (e.stderr || '').trim().slice(0, 5_000) || undefined,
+            error: e.message?.slice(0, 1_000),
+          });
+        }
+      },
+    }),
+
+    read_file: tool({
+      description: 'Read the contents of a file on the server.',
+      inputSchema: z.object({
+        path: z.string().describe('Absolute path to the file'),
+      }),
+      execute: async (args) => {
+        try {
+          const content = readFileSync(args.path, 'utf-8');
+          return JSON.stringify({
+            success: true,
+            content: content.slice(0, 50_000),
+            truncated: content.length > 50_000,
+          });
+        } catch (err) {
+          return JSON.stringify({ success: false, error: (err as Error).message });
+        }
+      },
+    }),
+
+    write_file: tool({
+      description: 'Write content to a file on the server. Creates parent directories if needed.',
+      inputSchema: z.object({
+        path: z.string().describe('Absolute path to the file'),
+        content: z.string().describe('Content to write'),
+      }),
+      execute: async (args) => {
+        try {
+          const { mkdirSync } = await import('node:fs');
+          const { dirname } = await import('node:path');
+          mkdirSync(dirname(args.path), { recursive: true });
+          writeFileSync(args.path, args.content);
+          return JSON.stringify({ success: true, path: args.path });
+        } catch (err) {
+          return JSON.stringify({ success: false, error: (err as Error).message });
+        }
       },
     }),
   };
