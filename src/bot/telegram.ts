@@ -87,6 +87,19 @@ export class TelegramBot {
       refreshTranslations: refreshTranslations ?? (async () => {}),
     };
 
+    // Only allow the owner chat through. The first user to message the bot
+    // becomes the owner; after that every other chat_id is silently ignored.
+    this.bot.use((tCtx, next) => {
+      const chatId = tCtx.chat?.id;
+      if (!chatId) return next();
+      const owner = configManager.getChatId();
+      if (owner && chatId !== owner) {
+        console.log(`Blocked message from unauthorized chat ${chatId}`);
+        return;
+      }
+      return next();
+    });
+
     registerCommands(this.bot, ctx);
     registerSettingsCallbacks(this.bot, ctx);
     registerUsageCallbacks(this.bot, ctx);
