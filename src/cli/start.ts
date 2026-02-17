@@ -368,11 +368,10 @@ export async function runStart(): Promise<void> {
     // Onboarding callback: called when user finishes AI setup in Telegram
     // Always provided so provider change from /settings also works
     async () => {
-      const newAssistant = await buildAssistant();
-      bot.setAssistant(newAssistant);
+      await rebuildAndSet();
       console.log(`Provider: ${configManager.getConfig().ai!.provider} (${configManager.getModel()})`);
       if (configManager.getConfig().ai?.refreshToken) {
-        startTokenRefreshLoop(configManager);
+        startTokenRefreshLoop(configManager, rebuildAndSet);
         console.log('OAuth token refresh loop started.');
       }
       await refreshTranslations();
@@ -392,10 +391,17 @@ export async function runStart(): Promise<void> {
   // Set up scheduler for reminders + resource monitoring + action tasks
   new Scheduler(taskRepo, configManager.getConfig().timezone, notifyFn, configManager, executeAction);
 
+  // Rebuild the assistant with the latest config (used after token refresh)
+  async function rebuildAndSet(): Promise<void> {
+    const newAssistant = await buildAssistant();
+    assistant = newAssistant;
+    bot.setAssistant(newAssistant);
+  }
+
   if (hasAi) {
     console.log(`Provider: ${configManager.getConfig().ai!.provider} (${configManager.getModel()})`);
     if (config.ai?.refreshToken) {
-      startTokenRefreshLoop(configManager);
+      startTokenRefreshLoop(configManager, rebuildAndSet);
       console.log('OAuth token refresh loop started.');
     }
   } else {

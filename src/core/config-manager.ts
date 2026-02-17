@@ -165,7 +165,8 @@ export class ConfigManager {
 
   isTokenExpiringSoon(bufferMs = 300_000): boolean {
     const expiresAt = this.config.ai?.tokenExpiresAt;
-    if (!expiresAt) return false;
+    // No expiry recorded but we have a refresh token — always refresh to be safe
+    if (!expiresAt) return !!this.config.ai?.refreshToken;
     return Date.now() + bufferMs >= new Date(expiresAt).getTime();
   }
 
