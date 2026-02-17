@@ -17,7 +17,7 @@ import { TelegramBot, type Transcriber } from '../bot/telegram.js';
 import { Scheduler } from '../scheduler/cron.js';
 import { createTranscriber } from '../audio/transcribe.js';
 import { startTokenRefreshLoop } from '../auth/token-refresh.js';
-import { translateUI } from '../bot/i18n.js';
+import { translateUI, translationCacheComplete } from '../bot/i18n.js';
 
 const ZARUKA_DIR = process.env.ZARUKA_DATA_DIR || join(homedir(), '.zaruka');
 const CONFIG_PATH = join(ZARUKA_DIR, 'config.json');
@@ -306,7 +306,7 @@ export async function runStart(): Promise<void> {
     const lang = configManager.getLanguage();
     if (lang !== 'auto' && lang !== 'English') {
       const cached = configManager.getTranslationLanguage();
-      if (cached !== lang) {
+      if (cached !== lang || !translationCacheComplete(configManager)) {
         try {
           const model = createModel(config.ai!);
           const strings = await translateUI(model, lang);
@@ -338,7 +338,7 @@ export async function runStart(): Promise<void> {
       configManager.clearTranslations();
     } else {
       const cached = configManager.getTranslationLanguage();
-      if (cached !== currentLang) {
+      if (cached !== currentLang || !translationCacheComplete(configManager)) {
         try {
           const ai = configManager.getConfig().ai;
           if (ai) {

@@ -314,7 +314,7 @@ export async function runStart() {
         catch { /* bot may not be started yet */ }
     }
     // Create Telegram bot
-    const bot = new TelegramBot(configManager.getConfig().telegram.botToken, assistant, messageRepo, configManager, usageRepo, transcribe, transcriberFactory, 
+    const bot = new TelegramBot(configManager.getConfig().telegram.botToken, assistant, messageRepo, configManager, usageRepo, taskRepo, transcribe, transcriberFactory, 
     // Onboarding callback: called when user finishes AI setup in Telegram
     // Always provided so provider change from /settings also works
     async () => {

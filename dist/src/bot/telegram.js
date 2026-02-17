@@ -2,6 +2,7 @@ import { Telegraf } from 'telegraf';
 import { OnboardingHandler } from './onboarding/handler.js';
 import { registerCommands, registerUsageCallbacks } from './commands.js';
 import { registerSettingsCallbacks } from './settings.js';
+import { registerTasksCallbacks } from './tasks.js';
 import { registerHandlers } from './message-handler.js';
 import { getAppVersion } from './utils.js';
 import { t } from './i18n.js';
@@ -10,7 +11,7 @@ export class TelegramBot {
     assistant;
     configManager;
     onboarding;
-    constructor(token, assistant, messageRepo, configManager, usageRepo, transcribe, transcriberFactory, onSetupComplete, refreshTranslations) {
+    constructor(token, assistant, messageRepo, configManager, usageRepo, taskRepo, transcribe, transcriberFactory, onSetupComplete, refreshTranslations) {
         this.bot = new Telegraf(token);
         this.assistant = assistant;
         this.configManager = configManager;
@@ -38,6 +39,7 @@ export class TelegramBot {
             configManager,
             messageRepo,
             usageRepo,
+            taskRepo,
             getAssistant: () => this.assistant,
             getTranscriber: () => _transcribe,
             setTranscriber: (t) => { _transcribe = t; },
@@ -59,9 +61,23 @@ export class TelegramBot {
             },
             refreshTranslations: refreshTranslations ?? (async () => { }),
         };
+        // Only allow the owner chat through. The first user to message the bot
+        // becomes the owner; after that every other chat_id is silently ignored.
+        this.bot.use((tCtx, next) => {
+            const chatId = tCtx.chat?.id;
+            if (!chatId)
+                return next();
+            const owner = configManager.getChatId();
+            if (owner && chatId !== owner) {
+                console.log(`Blocked message from unauthorized chat ${chatId}`);
+                return;
+            }
+            return next();
+        });
         registerCommands(this.bot, ctx);
         registerSettingsCallbacks(this.bot, ctx);
         registerUsageCallbacks(this.bot, ctx);
+        registerTasksCallbacks(this.bot, ctx);
         this.registerOnboardingCallbacks();
         registerHandlers(this.bot, ctx);
         this.bot.catch((err) => {
@@ -76,6 +92,7 @@ export class TelegramBot {
         await this.bot.telegram.setMyCommands([
             { command: 'start', description: t(this.configManager, 'cmd_desc.start') },
             { command: 'settings', description: t(this.configManager, 'cmd_desc.settings') },
+            { command: 'tasks', description: t(this.configManager, 'cmd_desc.tasks') },
             { command: 'usage', description: t(this.configManager, 'cmd_desc.usage') },
             { command: 'resources', description: t(this.configManager, 'cmd_desc.resources') },
             { command: 'version', description: t(this.configManager, 'cmd_desc.version') },

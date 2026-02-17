@@ -3,6 +3,7 @@ import { getResourceSnapshot, formatResourceReport } from '../monitor/resources.
 import { fmtNum } from '../db/usage-repository.js';
 import { getAppVersion } from './utils.js';
 import { settingsText, settingsKeyboard } from './settings.js';
+import { showTasksList } from './tasks.js';
 import { t } from './i18n.js';
 export function registerCommands(bot, ctx) {
     const { configManager, usageRepo, onboarding, awaitingThresholdInput } = ctx;
@@ -51,6 +52,10 @@ export function registerCommands(bot, ctx) {
     bot.command('settings', async (tCtx) => {
         ctx.captureChatId(tCtx.chat.id);
         await tCtx.reply(settingsText(configManager), settingsKeyboard(configManager));
+    });
+    bot.command('tasks', async (tCtx) => {
+        ctx.captureChatId(tCtx.chat.id);
+        await showTasksList(tCtx, ctx);
     });
     bot.command('cancel', async (tCtx) => {
         const chatId = tCtx.chat.id;

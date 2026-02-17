@@ -6,7 +6,7 @@ export interface Task {
     due_time: string;
     recurrence: string | null;
     action: string | null;
-    status: 'active' | 'completed' | 'deleted';
+    status: 'active' | 'completed' | 'deleted' | 'paused';
     source: string;
     source_ref: string | null;
     reminder_days: number;

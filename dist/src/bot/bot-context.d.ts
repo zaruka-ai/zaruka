@@ -2,12 +2,14 @@ import type { Assistant } from '../core/assistant.js';
 import type { MessageRepository } from '../db/message-repository.js';
 import type { ConfigManager } from '../core/config-manager.js';
 import type { UsageRepository } from '../db/usage-repository.js';
+import type { TaskRepository } from '../db/repository.js';
 import type { OnboardingHandler } from './onboarding/handler.js';
 export type Transcriber = (fileUrl: string) => Promise<string>;
 export interface BotContext {
     configManager: ConfigManager;
     messageRepo: MessageRepository;
     usageRepo: UsageRepository;
+    taskRepo: TaskRepository;
     getAssistant: () => Assistant | null;
     getTranscriber: () => Transcriber | null;
     setTranscriber: (t: Transcriber) => void;

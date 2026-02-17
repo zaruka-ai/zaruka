@@ -17,6 +17,8 @@ export declare class TaskRepository {
     list(status?: string): Task[];
     complete(id: number): Task | undefined;
     update(id: number, data: Partial<Pick<Task, 'title' | 'description' | 'due_date' | 'due_time' | 'recurrence' | 'action' | 'reminder_days'>>): Task | undefined;
+    pause(id: number): Task | undefined;
+    resume(id: number): Task | undefined;
     delete(id: number): boolean;
     /** Return active tasks whose date+time has arrived in the given timezone. */
     getDueNow(timezone: string): Task[];
