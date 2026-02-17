@@ -122,7 +122,8 @@ async function handleVoice(tCtx, ctx) {
             await tCtx.reply(t(ctx.configManager, 'error.voice_transcribe'));
             return;
         }
-        await processAndReply(tCtx, text, ctx);
+        const duration = tCtx.message.voice.duration;
+        await processAndReply(tCtx, `[The user sent a voice message (${duration}s). It has been automatically transcribed below. Reply to the content naturally, as if the user typed it.]\n${text}`, ctx);
     }
     catch (err) {
         console.error('Error processing voice message:', err);

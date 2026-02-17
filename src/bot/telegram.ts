@@ -4,10 +4,12 @@ import type { MessageRepository } from '../db/message-repository.js';
 import type { ConfigManager } from '../core/config-manager.js';
 import type { UsageRepository } from '../db/usage-repository.js';
 import type { AiProvider } from '../core/types.js';
+import type { TaskRepository } from '../db/repository.js';
 import type { BotContext } from './bot-context.js';
 import { OnboardingHandler } from './onboarding/handler.js';
 import { registerCommands, registerUsageCallbacks } from './commands.js';
 import { registerSettingsCallbacks } from './settings.js';
+import { registerTasksCallbacks } from './tasks.js';
 import { registerHandlers } from './message-handler.js';
 import { getAppVersion } from './utils.js';
 import { t } from './i18n.js';
@@ -26,6 +28,7 @@ export class TelegramBot {
     messageRepo: MessageRepository,
     configManager: ConfigManager,
     usageRepo: UsageRepository,
+    taskRepo: TaskRepository,
     transcribe?: (fileUrl: string) => Promise<string>,
     transcriberFactory?: () => Promise<((fileUrl: string) => Promise<string>) | undefined>,
     onSetupComplete?: () => Promise<void>,
@@ -62,6 +65,7 @@ export class TelegramBot {
       configManager,
       messageRepo,
       usageRepo,
+      taskRepo,
       getAssistant: () => this.assistant,
       getTranscriber: () => _transcribe,
       setTranscriber: (t) => { _transcribe = t; },
@@ -86,6 +90,7 @@ export class TelegramBot {
     registerCommands(this.bot, ctx);
     registerSettingsCallbacks(this.bot, ctx);
     registerUsageCallbacks(this.bot, ctx);
+    registerTasksCallbacks(this.bot, ctx);
     this.registerOnboardingCallbacks();
     registerHandlers(this.bot, ctx);
 
@@ -103,6 +108,7 @@ export class TelegramBot {
     await this.bot.telegram.setMyCommands([
       { command: 'start', description: t(this.configManager, 'cmd_desc.start') },
       { command: 'settings', description: t(this.configManager, 'cmd_desc.settings') },
+      { command: 'tasks', description: t(this.configManager, 'cmd_desc.tasks') },
       { command: 'usage', description: t(this.configManager, 'cmd_desc.usage') },
       { command: 'resources', description: t(this.configManager, 'cmd_desc.resources') },
       { command: 'version', description: t(this.configManager, 'cmd_desc.version') },

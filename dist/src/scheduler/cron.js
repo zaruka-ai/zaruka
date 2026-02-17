@@ -1,22 +1,24 @@
 import cron from 'node-cron';
 import { getResourceSnapshot, formatResourceReport } from '../monitor/resources.js';
 export class Scheduler {
-    reminderJob = null;
+    taskJob = null;
     resourceJob = null;
     repo;
     timezone;
     notifyFn;
+    executeAction;
     configManager;
     lastAlerts = new Map(); // resource → last alert timestamp
     static ALERT_COOLDOWN_MS = 15 * 60 * 1000; // 15 minutes
-    constructor(repo, timezone, reminderCron, notifyFn, configManager) {
+    constructor(repo, timezone, notifyFn, configManager, executeAction) {
         this.repo = repo;
         this.timezone = timezone;
         this.notifyFn = notifyFn;
         this.configManager = configManager;
-        // Task reminder cron
-        this.reminderJob = cron.schedule(reminderCron, () => {
-            this.checkReminders().catch(console.error);
+        this.executeAction = executeAction ?? null;
+        // Check tasks every minute
+        this.taskJob = cron.schedule('* * * * *', () => {
+            this.checkTasks().catch(console.error);
         }, { timezone });
         // Resource monitoring cron
         if (this.configManager.isResourceMonitorEnabled()) {
@@ -26,18 +28,35 @@ export class Scheduler {
             }, { timezone });
         }
     }
-    async checkReminders() {
-        const tasks = this.repo.getDueForReminder(this.timezone);
+    async checkTasks() {
+        const tasks = this.repo.getDueNow(this.timezone);
         if (tasks.length === 0)
             return;
-        const lines = tasks.map(t => {
-            const due = t.due_date ? ` (due: ${t.due_date})` : '';
-            return `- ${t.title}${due}`;
-        });
-        const message = `⏰ Reminder! You have ${tasks.length} upcoming task(s):\n\n${lines.join('\n')}`;
-        await this.notifyFn(message);
         for (const task of tasks) {
-            this.repo.markNotified(task.id);
+            try {
+                if (task.action && this.executeAction) {
+                    // Action task — run AI with the instruction and send result
+                    const result = await this.executeAction(task.action);
+                    const message = `🤖 [${task.title}]\n\n${result}`;
+                    await this.notifyFn(message);
+                }
+                else {
+                    // Simple reminder
+                    const due = task.due_date ? ` (${task.due_date} ${task.due_time})` : '';
+                    const desc = task.description ? `\n${task.description}` : '';
+                    await this.notifyFn(`⏰ ${task.title}${due}${desc}`);
+                }
+            }
+            catch (err) {
+                console.error(`Scheduler: error processing task #${task.id}:`, err);
+            }
+            // Advance recurring tasks or complete one-time tasks
+            if (task.recurrence) {
+                this.repo.advanceRecurrence(task.id);
+            }
+            else {
+                this.repo.complete(task.id);
+            }
         }
     }
     async checkResources() {
@@ -83,11 +102,11 @@ export class Scheduler {
         return now - lastAlert < Scheduler.ALERT_COOLDOWN_MS;
     }
     start() {
-        this.reminderJob?.start();
+        this.taskJob?.start();
         this.resourceJob?.start();
     }
     stop() {
-        this.reminderJob?.stop();
+        this.taskJob?.stop();
         this.resourceJob?.stop();
     }
 }

@@ -21,6 +21,7 @@ export function createAllTools(deps) {
         ...createWeatherTools(),
         ...createWebTools(),
         ...createResourceTools(),
+        ...createShellTools(),
         ...createHistoryTools(deps.messageRepo),
         ...createUsageTools(deps.usageRepo),
         ...createCredentialTools(),
@@ -32,21 +33,31 @@ export function createAllTools(deps) {
 function createTaskTools(repo) {
     return {
         create_task: tool({
-            description: 'Create a new task',
+            description: 'Create a new task. Can be a one-time reminder, recurring reminder, or a recurring bot action (with an AI instruction).',
             inputSchema: z.object({
                 title: z.string().describe('Task title'),
                 description: z.string().optional().describe('Task description'),
                 due_date: z.string().optional().describe('Due date in YYYY-MM-DD format'),
+                due_time: z.string().optional().describe('Due time in HH:MM format (default: 12:00)'),
+                recurrence: z.string().optional().describe("Recurrence rule: 'daily', 'weekly', 'monthly', 'yearly', or null for one-time"),
+                action: z.string().optional().describe('AI instruction for the bot to execute on schedule (null = simple reminder)'),
             }),
             execute: async (args) => {
                 const task = repo.create({
                     title: args.title,
                     description: args.description,
                     due_date: args.due_date,
+                    due_time: args.due_time,
+                    recurrence: args.recurrence,
+                    action: args.action,
                 });
                 return JSON.stringify({
                     success: true,
-                    task: { id: task.id, title: task.title, due_date: task.due_date },
+                    task: {
+                        id: task.id, title: task.title,
+                        due_date: task.due_date, due_time: task.due_time,
+                        recurrence: task.recurrence, action: task.action ? '(action set)' : null,
+                    },
                 });
             },
         }),
@@ -61,7 +72,10 @@ function createTaskTools(repo) {
                     return JSON.stringify({ tasks: [], message: 'No tasks found' });
                 return JSON.stringify({
                     tasks: tasks.map((t) => ({
-                        id: t.id, title: t.title, due_date: t.due_date, status: t.status,
+                        id: t.id, title: t.title,
+                        due_date: t.due_date, due_time: t.due_time,
+                        recurrence: t.recurrence, has_action: !!t.action,
+                        status: t.status,
                     })),
                 });
             },
@@ -88,12 +102,22 @@ function createTaskTools(repo) {
                 title: z.string().optional().describe('New title'),
                 description: z.string().optional().describe('New description'),
                 due_date: z.string().optional().describe('New due date in YYYY-MM-DD format'),
+                due_time: z.string().optional().describe('New due time in HH:MM format'),
+                recurrence: z.string().optional().describe("Recurrence rule: 'daily', 'weekly', 'monthly', 'yearly', or null"),
+                action: z.string().optional().describe('AI instruction for the bot to execute on schedule'),
             }),
             execute: async (args) => {
                 const { id, ...rest } = args;
                 const task = repo.update(id, rest);
                 return JSON.stringify(task
-                    ? { success: true, task: { id: task.id, title: task.title, due_date: task.due_date } }
+                    ? {
+                        success: true,
+                        task: {
+                            id: task.id, title: task.title,
+                            due_date: task.due_date, due_time: task.due_time,
+                            recurrence: task.recurrence,
+                        },
+                    }
                     : { success: false, error: 'Task not found' });
             },
         }),
@@ -286,6 +310,86 @@ function createResourceTools() {
                 const { checkInstallationFeasibility } = await import('../monitor/resources.js');
                 const result = checkInstallationFeasibility(args.required_disk_gb, args.required_ram_gb);
                 return JSON.stringify(result);
+            },
+        }),
+    };
+}
+// === Shell Tools ===
+function createShellTools() {
+    return {
+        run_shell_command: tool({
+            description: 'Execute a shell command on the server and return its output. '
+                + 'Use this to install packages, manage files, run scripts, check system state, etc. '
+                + 'Commands run as the current process user with a 60-second timeout.',
+            inputSchema: z.object({
+                command: z.string().describe('The shell command to execute (e.g. "apt-get install -y ffmpeg", "ls -la /data")'),
+            }),
+            execute: async (args) => {
+                const { exec } = await import('node:child_process');
+                const { promisify } = await import('node:util');
+                const execAsync = promisify(exec);
+                try {
+                    const { stdout, stderr } = await execAsync(args.command, {
+                        timeout: 60_000,
+                        maxBuffer: 1024 * 1024,
+                        env: { ...process.env, DEBIAN_FRONTEND: 'noninteractive' },
+                    });
+                    const output = (stdout || '').trim();
+                    const errors = (stderr || '').trim();
+                    return JSON.stringify({
+                        success: true,
+                        ...(output ? { stdout: output.slice(0, 10_000) } : {}),
+                        ...(errors ? { stderr: errors.slice(0, 5_000) } : {}),
+                    });
+                }
+                catch (err) {
+                    const e = err;
+                    return JSON.stringify({
+                        success: false,
+                        exit_code: e.code,
+                        stdout: (e.stdout || '').trim().slice(0, 5_000) || undefined,
+                        stderr: (e.stderr || '').trim().slice(0, 5_000) || undefined,
+                        error: e.message?.slice(0, 1_000),
+                    });
+                }
+            },
+        }),
+        read_file: tool({
+            description: 'Read the contents of a file on the server.',
+            inputSchema: z.object({
+                path: z.string().describe('Absolute path to the file'),
+            }),
+            execute: async (args) => {
+                try {
+                    const content = readFileSync(args.path, 'utf-8');
+                    return JSON.stringify({
+                        success: true,
+                        content: content.slice(0, 50_000),
+                        truncated: content.length > 50_000,
+                    });
+                }
+                catch (err) {
+                    return JSON.stringify({ success: false, error: err.message });
+                }
+            },
+        }),
+        write_file: tool({
+            description: 'Write content to a file on the server. Creates parent directories if needed.',
+            inputSchema: z.object({
+                path: z.string().describe('Absolute path to the file'),
+                content: z.string().describe('Content to write'),
+            }),
+            execute: async (args) => {
+                try {
+                    const { mkdirSync } = await import('node:fs');
+                    const { dirname } = await import('node:path');
+                    mkdirSync(dirname(args.path), { recursive: true });
+                    writeFileSync(args.path, args.content);
+                    return JSON.stringify({ success: true, path: args.path });
+                }
+                catch (err) {
+                    return JSON.stringify({ success: false, error: err.message });
+                }
             },
         }),
     };

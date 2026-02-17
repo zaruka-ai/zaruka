@@ -4,6 +4,7 @@ import { fmtNum } from '../db/usage-repository.js';
 import type { BotContext } from './bot-context.js';
 import { getAppVersion } from './utils.js';
 import { settingsText, settingsKeyboard } from './settings.js';
+import { showTasksList } from './tasks.js';
 import { t, type UIKey } from './i18n.js';
 
 export function registerCommands(bot: Telegraf, ctx: BotContext): void {
@@ -62,6 +63,11 @@ export function registerCommands(bot: Telegraf, ctx: BotContext): void {
   bot.command('settings', async (tCtx) => {
     ctx.captureChatId(tCtx.chat.id);
     await tCtx.reply(settingsText(configManager), settingsKeyboard(configManager));
+  });
+
+  bot.command('tasks', async (tCtx) => {
+    ctx.captureChatId(tCtx.chat.id);
+    await showTasksList(tCtx, ctx);
   });
 
   bot.command('cancel', async (tCtx) => {
