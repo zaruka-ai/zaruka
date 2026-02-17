@@ -54,5 +54,12 @@ export function getDb(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_api_usage_date ON api_usage(date);
   `);
 
+  // Migrate: add new task columns (due_time, recurrence, action)
+  const cols = db.prepare("PRAGMA table_info('tasks')").all() as { name: string }[];
+  const colNames = new Set(cols.map((c) => c.name));
+  if (!colNames.has('due_time')) db.exec("ALTER TABLE tasks ADD COLUMN due_time TEXT DEFAULT '12:00'");
+  if (!colNames.has('recurrence')) db.exec('ALTER TABLE tasks ADD COLUMN recurrence TEXT');
+  if (!colNames.has('action')) db.exec('ALTER TABLE tasks ADD COLUMN action TEXT');
+
   return db;
 }

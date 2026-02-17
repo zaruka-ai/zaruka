@@ -3,6 +3,9 @@ export interface Task {
     title: string;
     description: string | null;
     due_date: string | null;
+    due_time: string;
+    recurrence: string | null;
+    action: string | null;
     status: 'active' | 'completed' | 'deleted';
     source: string;
     source_ref: string | null;

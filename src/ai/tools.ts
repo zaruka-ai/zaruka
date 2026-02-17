@@ -61,21 +61,31 @@ export function createAllTools(deps: ToolDeps): ToolSet {
 function createTaskTools(repo: TaskRepository): ToolSet {
   return {
     create_task: tool({
-      description: 'Create a new task',
+      description: 'Create a new task. Can be a one-time reminder, recurring reminder, or a recurring bot action (with an AI instruction).',
       inputSchema: z.object({
         title: z.string().describe('Task title'),
         description: z.string().optional().describe('Task description'),
         due_date: z.string().optional().describe('Due date in YYYY-MM-DD format'),
+        due_time: z.string().optional().describe('Due time in HH:MM format (default: 12:00)'),
+        recurrence: z.string().optional().describe("Recurrence rule: 'daily', 'weekly', 'monthly', 'yearly', or null for one-time"),
+        action: z.string().optional().describe('AI instruction for the bot to execute on schedule (null = simple reminder)'),
       }),
       execute: async (args) => {
         const task = repo.create({
           title: args.title,
           description: args.description,
           due_date: args.due_date,
+          due_time: args.due_time,
+          recurrence: args.recurrence,
+          action: args.action,
         });
         return JSON.stringify({
           success: true,
-          task: { id: task.id, title: task.title, due_date: task.due_date },
+          task: {
+            id: task.id, title: task.title,
+            due_date: task.due_date, due_time: task.due_time,
+            recurrence: task.recurrence, action: task.action ? '(action set)' : null,
+          },
         });
       },
     }),
@@ -90,7 +100,10 @@ function createTaskTools(repo: TaskRepository): ToolSet {
         if (tasks.length === 0) return JSON.stringify({ tasks: [], message: 'No tasks found' });
         return JSON.stringify({
           tasks: tasks.map((t) => ({
-            id: t.id, title: t.title, due_date: t.due_date, status: t.status,
+            id: t.id, title: t.title,
+            due_date: t.due_date, due_time: t.due_time,
+            recurrence: t.recurrence, has_action: !!t.action,
+            status: t.status,
           })),
         });
       },
@@ -120,12 +133,22 @@ function createTaskTools(repo: TaskRepository): ToolSet {
         title: z.string().optional().describe('New title'),
         description: z.string().optional().describe('New description'),
         due_date: z.string().optional().describe('New due date in YYYY-MM-DD format'),
+        due_time: z.string().optional().describe('New due time in HH:MM format'),
+        recurrence: z.string().optional().describe("Recurrence rule: 'daily', 'weekly', 'monthly', 'yearly', or null"),
+        action: z.string().optional().describe('AI instruction for the bot to execute on schedule'),
       }),
       execute: async (args) => {
         const { id, ...rest } = args;
-        const task = repo.update(id, rest as { title?: string; description?: string; due_date?: string });
+        const task = repo.update(id, rest);
         return JSON.stringify(task
-          ? { success: true, task: { id: task.id, title: task.title, due_date: task.due_date } }
+          ? {
+            success: true,
+            task: {
+              id: task.id, title: task.title,
+              due_date: task.due_date, due_time: task.due_time,
+              recurrence: task.recurrence,
+            },
+          }
           : { success: false, error: 'Task not found' });
       },
     }),

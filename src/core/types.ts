@@ -5,7 +5,10 @@ export interface Task {
   title: string;
   description: string | null;
   due_date: string | null;
-  status: 'active' | 'completed' | 'deleted';
+  due_time: string;               // HH:MM, default '12:00'
+  recurrence: string | null;      // null | 'daily' | 'weekly' | 'monthly' | 'yearly' | cron
+  action: string | null;          // AI instruction (null = simple reminder)
+  status: 'active' | 'completed' | 'deleted' | 'paused';
   source: string;
   source_ref: string | null;
   reminder_days: number;

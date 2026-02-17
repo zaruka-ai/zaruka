@@ -329,8 +329,14 @@ export async function runStart() {
     }, refreshTranslations);
     // Get the real send function from the bot for alerts & reminders
     const notifyFn = bot.getSendMessageFn();
-    // Set up scheduler for reminders + resource monitoring
-    new Scheduler(taskRepo, configManager.getConfig().timezone, configManager.getConfig().reminderCron, notifyFn, configManager);
+    // AI executor for scheduled action tasks
+    const executeAction = async (instruction) => {
+        if (!assistant)
+            return 'AI not configured';
+        return assistant.process(instruction);
+    };
+    // Set up scheduler for reminders + resource monitoring + action tasks
+    new Scheduler(taskRepo, configManager.getConfig().timezone, notifyFn, configManager, executeAction);
     if (hasAi) {
         console.log(`Provider: ${configManager.getConfig().ai.provider} (${configManager.getModel()})`);
         if (config.ai?.refreshToken) {
