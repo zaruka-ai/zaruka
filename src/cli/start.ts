@@ -25,6 +25,7 @@ import { createMcpManagementTools } from '../mcp/mcp-tools.js';
 const ZARUKA_DIR = process.env.ZARUKA_DATA_DIR || join(homedir(), '.zaruka');
 const CONFIG_PATH = join(ZARUKA_DIR, 'config.json');
 const SKILLS_DIR = join(ZARUKA_DIR, 'skills');
+const MEMORY_DIR = join(ZARUKA_DIR, 'memory');
 
 function loadConfig(): ZarukaConfig {
   // Support Docker/Coolify env vars (full config)
@@ -88,7 +89,7 @@ function getDefaultModel(provider?: string): string {
 
 function buildSystemPrompt(
   timezone: string, language: string, userName?: string, birthday?: string,
-  provider?: string, model?: string, mcpServerNames?: string[],
+  provider?: string, model?: string, mcpServerNames?: string[], memoryContent?: string,
 ): string {
   const langInstruction = language === 'auto'
     ? [
@@ -258,6 +259,20 @@ function buildSystemPrompt(
         'After finding a server, use `add_mcp_server` to configure it (stdio for npm packages, http/sse for remotes). It will be connected automatically.',
       ]),
     '',
+    'PERSISTENT MEMORY:',
+    'You have persistent memory that survives across conversations. Use save_memory to update it when you learn important facts:',
+    '- Personal preferences, interests, dietary restrictions',
+    '- Family/relationship info shared by the user',
+    '- Work context (job, projects, tools)',
+    '- Recurring requests or workflows',
+    '- Corrections ("I prefer X over Y")',
+    'Do NOT save transient info (today\'s weather, one-time requests).',
+    'save_memory replaces the entire file — include ALL content you want to keep.',
+    '',
+    '<memory>',
+    memoryContent || 'Empty — no memories saved yet.',
+    '</memory>',
+    '',
     'SKILLS:',
     'You can create new skills with `evolve_skill`, list installed skills with `list_skills`, and remove skills with `remove_skill`.',
   ].join('\n');
@@ -289,6 +304,10 @@ export async function runStart(): Promise<void> {
 
     const model = createModel(ai);
 
+    // Read persistent memory
+    const memoryFile = join(MEMORY_DIR, 'MEMORY.md');
+    const memoryContent = existsSync(memoryFile) ? readFileSync(memoryFile, 'utf-8').trim() : undefined;
+
     const builtinTools = createAllTools({
       taskRepo,
       messageRepo,
@@ -296,6 +315,7 @@ export async function runStart(): Promise<void> {
       configManager,
       skillsDir: SKILLS_DIR,
       aiConfig: ai,
+      memoryDir: MEMORY_DIR,
     });
 
     // Add evolve_skill and dynamic skills
@@ -332,6 +352,7 @@ export async function runStart(): Promise<void> {
       ai.provider,
       ai.model,
       mcpServerNames,
+      memoryContent,
     );
 
     // Collect fallback configs from saved providers (excluding the current one)

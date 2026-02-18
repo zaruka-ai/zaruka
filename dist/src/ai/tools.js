@@ -1,6 +1,6 @@
 import { tool } from 'ai';
 import { z } from 'zod/v4';
-import { existsSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
@@ -27,13 +27,16 @@ export function createAllTools(deps) {
         ...createCredentialTools(),
         ...createExecuteSkillTools(deps.skillsDir),
         ...createProfileTools(deps.configManager),
+        ...createMemoryTools(deps.memoryDir),
     };
 }
 // === Task Tools ===
 function createTaskTools(repo) {
     return {
         create_task: tool({
-            description: 'Create a new task. Can be a one-time reminder, recurring reminder, or a recurring bot action (with an AI instruction).',
+            description: 'Create a new task. Can be a one-time reminder, recurring reminder, or a recurring bot action (with an AI instruction). '
+                + 'IMPORTANT: Before creating, always call list_tasks first to check if a similar task already exists. '
+                + 'If it does, use update_task instead of creating a duplicate.',
             inputSchema: z.object({
                 title: z.string().describe('Task title'),
                 description: z.string().optional().describe('Task description'),
@@ -43,6 +46,20 @@ function createTaskTools(repo) {
                 action: z.string().optional().describe('AI instruction for the bot to execute on schedule (null = simple reminder)'),
             }),
             execute: async (args) => {
+                // Guard against duplicate active tasks with a similar title
+                const existing = repo.findActiveByTitle(args.title);
+                if (existing) {
+                    return JSON.stringify({
+                        success: true,
+                        duplicate: true,
+                        message: `An active task with a similar title already exists (id=${existing.id}). Use update_task to modify it instead.`,
+                        task: {
+                            id: existing.id, title: existing.title,
+                            due_date: existing.due_date, due_time: existing.due_time,
+                            recurrence: existing.recurrence, action: existing.action ? '(action set)' : null,
+                        },
+                    });
+                }
                 const task = repo.create({
                     title: args.title,
                     description: args.description,
@@ -556,6 +573,39 @@ function createProfileTools(configManager) {
                     configManager.updateProfile(profile);
                 }
                 return JSON.stringify({ success: true, saved: profile });
+            },
+        }),
+    };
+}
+// === Memory Tools ===
+const MEMORY_MAX_CHARS = 4000;
+function createMemoryTools(memoryDir) {
+    const memoryFile = join(memoryDir, 'MEMORY.md');
+    return {
+        save_memory: tool({
+            description: 'Save persistent memory that will be available across all future conversations. '
+                + 'This REPLACES the entire memory file — include ALL content you want to keep. '
+                + 'Use this when the user shares important personal info, preferences, or context worth remembering long-term.',
+            inputSchema: z.object({
+                content: z.string().describe('Full markdown content to save as memory (max ~4000 chars)'),
+            }),
+            execute: async (args) => {
+                try {
+                    let content = args.content;
+                    if (content.length > MEMORY_MAX_CHARS) {
+                        content = content.slice(0, MEMORY_MAX_CHARS);
+                    }
+                    mkdirSync(memoryDir, { recursive: true });
+                    writeFileSync(memoryFile, content, 'utf-8');
+                    return JSON.stringify({
+                        success: true,
+                        chars: content.length,
+                        truncated: args.content.length > MEMORY_MAX_CHARS,
+                    });
+                }
+                catch (err) {
+                    return JSON.stringify({ success: false, error: err.message });
+                }
             },
         }),
     };
