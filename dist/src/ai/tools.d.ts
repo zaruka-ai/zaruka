@@ -11,6 +11,7 @@ export interface ToolDeps {
     configManager: ConfigManager;
     skillsDir: string;
     aiConfig: AiConfig;
+    memoryDir: string;
 }
 export declare function createAllTools(deps: ToolDeps): ToolSet;
 //# sourceMappingURL=tools.d.ts.map
