@@ -391,9 +391,20 @@ async function processAndReply(tCtx, userMessage, ctx, msgLang) {
                 fullErrorText += ' ' + e.statusCode;
         }
         const isRateLimit = /rate.?limit|quota|limit exceeded|429|RESOURCE_EXHAUSTED/i.test(fullErrorText);
+        const isServerError = /\b50[0-4]\b|overloaded|internal.server.error/i.test(fullErrorText);
         if (isRateLimit) {
             const config = ctx.configManager.getConfig();
             await writer.abort(buildRateLimitMessage(config.ai?.provider, !!config.ai?.authToken, errorMsg));
+        }
+        else if (isServerError) {
+            const config = ctx.configManager.getConfig();
+            const provider = config.ai?.provider ?? 'AI';
+            const hasFallbacks = Object.keys(config.savedProviders ?? {})
+                .some((p) => p !== config.ai?.provider);
+            const switchHint = hasFallbacks
+                ? '\n\nFallback providers were also unavailable. You can switch manually via /settings.'
+                : '\n\nYou can switch to another model via /settings.';
+            await writer.abort(`⚠️ ${provider} is temporarily unavailable (server error).${switchHint}`);
         }
         else {
             await writer.abort(t(ctx.configManager, 'error.processing'));
