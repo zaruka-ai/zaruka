@@ -103,6 +103,11 @@ export async function resolveTimezoneFromCoords(lat, lon) {
         return null;
     }
 }
+/** If text has an unclosed ``` code fence, append a closing one. */
+export function closeUnclosedCodeFences(text) {
+    const count = (text.match(/```/g) || []).length;
+    return count % 2 === 1 ? text + '\n```' : text;
+}
 export function splitMessage(text, maxLength) {
     if (text.length <= maxLength)
         return [text];

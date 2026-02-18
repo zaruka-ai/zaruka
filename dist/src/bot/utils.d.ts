@@ -18,5 +18,7 @@ export declare function resolveTimezoneFromCoords(lat: number, lon: number): Pro
     city: string;
     timezone: string;
 } | null>;
+/** If text has an unclosed ``` code fence, append a closing one. */
+export declare function closeUnclosedCodeFences(text: string): string;
 export declare function splitMessage(text: string, maxLength: number): string[];
 //# sourceMappingURL=utils.d.ts.map

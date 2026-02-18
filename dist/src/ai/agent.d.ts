@@ -7,6 +7,17 @@ export interface RunAgentResult {
         outputTokens: number;
     };
 }
+export interface StreamCallbacks {
+    onTextDelta: (delta: string) => void;
+}
+export declare function runAgentStream(opts: {
+    model: LanguageModel;
+    system: string;
+    messages: ModelMessage[];
+    tools: ToolSet;
+    maxSteps?: number;
+    callbacks: StreamCallbacks;
+}): Promise<RunAgentResult>;
 export declare function runAgent(opts: {
     model: LanguageModel;
     system: string;

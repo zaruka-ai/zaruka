@@ -1,4 +1,5 @@
 import type { LanguageModel, ToolSet } from 'ai';
+import { type StreamCallbacks } from '../ai/agent.js';
 import { type AiConfig } from '../ai/model-factory.js';
 export interface ChatMessage {
     role: 'user' | 'assistant';
@@ -25,6 +26,7 @@ export declare class Assistant {
         fallbackConfigs?: AiConfig[];
     });
     process(userMessage: string, history?: ChatMessage[]): Promise<string>;
+    processStream(userMessage: string, history: ChatMessage[] | undefined, callbacks: StreamCallbacks): Promise<string>;
     private buildMessages;
 }
 //# sourceMappingURL=assistant.d.ts.map
