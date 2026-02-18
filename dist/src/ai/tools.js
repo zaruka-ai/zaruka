@@ -217,45 +217,113 @@ function stripHtml(html) {
         .replace(/\s+/g, ' ')
         .trim();
 }
+/** Simple search cache to avoid hitting rate limits on repeated queries. */
+const searchCache = new Map();
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+/** Search via DuckDuckGo HTML endpoint. */
+async function searchDuckDuckGo(query) {
+    const resp = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, { headers: { 'User-Agent': USER_AGENT }, signal: AbortSignal.timeout(10000) });
+    const html = await resp.text();
+    const uddgMatches = [...html.matchAll(/uddg=([^&"]+)/g)];
+    const rawUrls = uddgMatches
+        .map((m) => { try {
+        return decodeURIComponent(m[1]);
+    }
+    catch {
+        return '';
+    } })
+        .filter((u) => u.startsWith('http') && !u.includes('duckduckgo.com'));
+    const urls = [...new Set(rawUrls)].slice(0, 8);
+    const titleMatches = [...html.matchAll(/class="result__a"[^>]*>([\s\S]*?)<\//g)];
+    const snippetMatches = [...html.matchAll(/class="result__snippet"[^>]*>([\s\S]*?)<\//g)];
+    const results = [];
+    for (let i = 0; i < urls.length; i++) {
+        const title = titleMatches[i] ? stripHtml(titleMatches[i][1]).slice(0, 200) : '';
+        const snippet = snippetMatches[i] ? stripHtml(snippetMatches[i][1]).slice(0, 300) : '';
+        results.push({ title, url: urls[i], snippet });
+    }
+    return results;
+}
+/** Fallback: search via Brave Search API (requires BRAVE_API_KEY). Retries on 429. */
+async function searchBrave(query) {
+    const apiKey = process.env.BRAVE_API_KEY;
+    if (!apiKey)
+        throw new Error('BRAVE_API_KEY not set');
+    const url = new URL('https://api.search.brave.com/res/v1/web/search');
+    url.searchParams.set('q', query);
+    url.searchParams.set('count', '8');
+    let lastErr = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+        if (attempt > 0)
+            await new Promise((r) => setTimeout(r, attempt * 1500));
+        const resp = await fetch(url.toString(), {
+            headers: {
+                'Accept': 'application/json',
+                'Accept-Encoding': 'gzip',
+                'X-Subscription-Token': apiKey,
+            },
+            signal: AbortSignal.timeout(10000),
+        });
+        if (resp.status === 429) {
+            lastErr = new Error('Brave API: 429 rate limited');
+            continue;
+        }
+        if (!resp.ok)
+            throw new Error(`Brave API: ${resp.status}`);
+        const data = await resp.json();
+        return (data.web?.results ?? []).slice(0, 8).map((r) => ({
+            title: (r.title ?? '').slice(0, 200),
+            url: r.url,
+            snippet: (r.description ?? '').slice(0, 300),
+        }));
+    }
+    throw lastErr ?? new Error('Brave API: max retries');
+}
 function createWebTools() {
     return {
         web_search: tool({
-            description: 'Search the web using DuckDuckGo. Returns URLs and text snippets. '
+            description: 'Search the web. Returns URLs and text snippets. '
                 + 'Use this when you need current/up-to-date information: prices, services, news, documentation, etc.',
             inputSchema: z.object({
                 query: z.string().describe('Search query'),
             }),
             execute: async (args) => {
-                try {
-                    const resp = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(args.query)}`, { headers: { 'User-Agent': USER_AGENT }, signal: AbortSignal.timeout(15000) });
-                    const html = await resp.text();
-                    const results = [];
-                    const uddgMatches = [...html.matchAll(/uddg=([^&"]+)/g)];
-                    const rawUrls = uddgMatches
-                        .map((m) => { try {
-                        return decodeURIComponent(m[1]);
-                    }
-                    catch {
-                        return '';
-                    } })
-                        .filter((u) => u.startsWith('http') && !u.includes('duckduckgo.com'));
-                    const urls = [...new Set(rawUrls)].slice(0, 8);
-                    const titleMatches = [...html.matchAll(/class="result__a"[^>]*>([\s\S]*?)<\//g)];
-                    const snippetMatches = [...html.matchAll(/class="result__snippet"[^>]*>([\s\S]*?)<\//g)];
-                    for (let i = 0; i < urls.length; i++) {
-                        const title = titleMatches[i]
-                            ? stripHtml(titleMatches[i][1]).slice(0, 200)
-                            : '';
-                        const snippet = snippetMatches[i]
-                            ? stripHtml(snippetMatches[i][1]).slice(0, 300)
-                            : '';
-                        results.push({ title, url: urls[i], snippet });
-                    }
-                    return JSON.stringify({ results });
+                // Check cache first
+                const cached = searchCache.get(args.query);
+                if (cached && Date.now() - cached.ts < CACHE_TTL_MS) {
+                    return JSON.stringify({ results: cached.results });
                 }
-                catch (err) {
-                    return JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
+                // Try Brave first (fast), fall back to DuckDuckGo
+                const providers = [];
+                const hasBraveKey = !!process.env.BRAVE_API_KEY;
+                if (hasBraveKey) {
+                    providers.push(() => searchBrave(args.query));
                 }
+                providers.push(() => searchDuckDuckGo(args.query));
+                for (const provider of providers) {
+                    try {
+                        const results = await provider();
+                        if (results.length > 0) {
+                            searchCache.set(args.query, { results, ts: Date.now() });
+                            return JSON.stringify({ results });
+                        }
+                    }
+                    catch (err) {
+                        console.log(`Search provider failed: ${err instanceof Error ? err.message : err}`);
+                    }
+                }
+                if (!hasBraveKey) {
+                    return JSON.stringify({
+                        error: 'Web search is unavailable. Brave Search API key is not configured. '
+                            + 'Ask the user to provide a Brave Search API key (free at https://brave.com/search/api/). '
+                            + 'Once they give it, use save_credential with name BRAVE_API_KEY to store it. '
+                            + 'Do NOT retry the search until the key is saved.',
+                    });
+                }
+                return JSON.stringify({
+                    error: 'Web search is temporarily unavailable (all providers failed). '
+                        + 'Do NOT retry the search — tell the user that search is currently down and offer to help without it.',
+                });
             },
         }),
         web_fetch: tool({

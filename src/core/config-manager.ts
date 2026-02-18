@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import type { ZarukaConfig, AiProviderConfig, ResourceThresholds, UserProfile } from './types.js';
+import type { ZarukaConfig, AiProviderConfig, ResourceThresholds, UserProfile, McpServerConfig } from './types.js';
 
 const ZARUKA_DIR = process.env.ZARUKA_DATA_DIR || join(homedir(), '.zaruka');
 const CONFIG_PATH = join(ZARUKA_DIR, 'config.json');
@@ -168,6 +168,26 @@ export class ConfigManager {
     // No expiry recorded but we have a refresh token — always refresh to be safe
     if (!expiresAt) return !!this.config.ai?.refreshToken;
     return Date.now() + bufferMs >= new Date(expiresAt).getTime();
+  }
+
+  getMcpServers(): Record<string, McpServerConfig> {
+    return this.config.mcpServers ?? {};
+  }
+
+  addMcpServer(name: string, config: McpServerConfig): void {
+    if (!this.config.mcpServers) this.config.mcpServers = {};
+    this.config.mcpServers[name] = config;
+    this.save();
+  }
+
+  removeMcpServer(name: string): boolean {
+    if (!this.config.mcpServers?.[name]) return false;
+    delete this.config.mcpServers[name];
+    if (Object.keys(this.config.mcpServers).length === 0) {
+      delete this.config.mcpServers;
+    }
+    this.save();
+    return true;
   }
 
   /** Wipe all data except the Telegram bot token. Returns a fresh minimal config. */

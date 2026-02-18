@@ -48,6 +48,23 @@ export interface UserProfile {
   birthday?: string; // MM-DD format
 }
 
+// === MCP Server Config ===
+
+export interface McpStdioConfig {
+  type?: 'stdio';
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+}
+
+export interface McpHttpConfig {
+  type: 'http' | 'sse';
+  url: string;
+  headers?: Record<string, string>;
+}
+
+export type McpServerConfig = McpStdioConfig | McpHttpConfig;
+
 // === Config ===
 
 export type AiProvider = 'anthropic' | 'openai' | 'google' | 'deepseek' | 'groq' | 'xai' | 'openai-compatible';
@@ -81,4 +98,6 @@ export interface ZarukaConfig {
   };
   /** Cached AI-translated UI strings. */
   uiTranslations?: { language: string; strings: Record<string, string> };
+  /** MCP server configurations (Claude Desktop-compatible format). */
+  mcpServers?: Record<string, McpServerConfig>;
 }

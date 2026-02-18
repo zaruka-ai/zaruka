@@ -65,6 +65,7 @@ export declare const UI_STRINGS: {
     readonly 'cmd.cancel_done': "❌ Cancelled.";
     readonly 'cmd.cancel_threshold': "❌ Cancelled. Threshold not changed.";
     readonly 'cmd.cancel_nothing': "Nothing to cancel.";
+    readonly 'processing.working': "⏳ Working on it…";
     readonly 'error.no_ai': "AI is not configured yet. Send /start to set up.";
     readonly 'error.voice_transcribe': "Could not transcribe the voice message. Please try again.";
     readonly 'error.voice_failed': "Sorry, something went wrong processing your voice message.";
@@ -102,6 +103,8 @@ export type UIKey = keyof typeof UI_STRINGS;
  * Returns cached translation if available, otherwise falls back to English.
  */
 export declare function t(cm: ConfigManager, key: UIKey, params?: Record<string, string>): string;
+/** Check if the cached translations cover all current UI_STRINGS keys. */
+export declare function translationCacheComplete(cm: ConfigManager): boolean;
 /**
  * Translate all UI strings to the given language using the AI model.
  * Returns a map of key → translated string.

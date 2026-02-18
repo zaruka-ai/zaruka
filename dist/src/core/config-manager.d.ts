@@ -1,4 +1,4 @@
-import type { ZarukaConfig, AiProviderConfig, ResourceThresholds, UserProfile } from './types.js';
+import type { ZarukaConfig, AiProviderConfig, ResourceThresholds, UserProfile, McpServerConfig } from './types.js';
 export declare class ConfigManager {
     private config;
     constructor(initial: ZarukaConfig);
@@ -25,6 +25,9 @@ export declare class ConfigManager {
     getResourceCron(): string;
     updateAuthToken(authToken: string, refreshToken?: string, expiresAt?: string): void;
     isTokenExpiringSoon(bufferMs?: number): boolean;
+    getMcpServers(): Record<string, McpServerConfig>;
+    addMcpServer(name: string, config: McpServerConfig): void;
+    removeMcpServer(name: string): boolean;
     /** Wipe all data except the Telegram bot token. Returns a fresh minimal config. */
     resetAll(): ZarukaConfig;
     private save;

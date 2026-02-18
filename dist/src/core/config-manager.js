@@ -139,9 +139,29 @@ export class ConfigManager {
     }
     isTokenExpiringSoon(bufferMs = 300_000) {
         const expiresAt = this.config.ai?.tokenExpiresAt;
+        // No expiry recorded but we have a refresh token — always refresh to be safe
         if (!expiresAt)
-            return false;
+            return !!this.config.ai?.refreshToken;
         return Date.now() + bufferMs >= new Date(expiresAt).getTime();
+    }
+    getMcpServers() {
+        return this.config.mcpServers ?? {};
+    }
+    addMcpServer(name, config) {
+        if (!this.config.mcpServers)
+            this.config.mcpServers = {};
+        this.config.mcpServers[name] = config;
+        this.save();
+    }
+    removeMcpServer(name) {
+        if (!this.config.mcpServers?.[name])
+            return false;
+        delete this.config.mcpServers[name];
+        if (Object.keys(this.config.mcpServers).length === 0) {
+            delete this.config.mcpServers;
+        }
+        this.save();
+        return true;
     }
     /** Wipe all data except the Telegram bot token. Returns a fresh minimal config. */
     resetAll() {

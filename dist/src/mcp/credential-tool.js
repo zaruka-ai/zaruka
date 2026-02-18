@@ -11,6 +11,7 @@ export function loadCredentials() {
     if (!existsSync(ENV_FILE))
         return;
     try {
+        let count = 0;
         const content = readFileSync(ENV_FILE, 'utf-8');
         for (const line of content.split('\n')) {
             const trimmed = line.trim();
@@ -23,9 +24,9 @@ export function loadCredentials() {
             const value = trimmed.slice(eqIdx + 1).trim();
             if (key && !process.env[key]) {
                 process.env[key] = value;
+                count++;
             }
         }
-        const count = content.split('\n').filter((l) => l.trim() && !l.trim().startsWith('#') && l.includes('=')).length;
         if (count > 0) {
             console.log(`Credentials: loaded ${count} from .env`);
         }

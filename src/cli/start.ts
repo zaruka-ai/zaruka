@@ -18,6 +18,8 @@ import { Scheduler } from '../scheduler/cron.js';
 import { createTranscriber } from '../audio/transcribe.js';
 import { startTokenRefreshLoop } from '../auth/token-refresh.js';
 import { translateUI, translationCacheComplete } from '../bot/i18n.js';
+import { McpManager } from '../mcp/mcp-manager.js';
+import { createMcpManagementTools } from '../mcp/mcp-tools.js';
 
 const ZARUKA_DIR = process.env.ZARUKA_DATA_DIR || join(homedir(), '.zaruka');
 const CONFIG_PATH = join(ZARUKA_DIR, 'config.json');
@@ -85,7 +87,7 @@ function getDefaultModel(provider?: string): string {
 
 function buildSystemPrompt(
   timezone: string, language: string, userName?: string, birthday?: string,
-  provider?: string, model?: string,
+  provider?: string, model?: string, mcpServerNames?: string[],
 ): string {
   const langInstruction = language === 'auto'
     ? [
@@ -236,6 +238,24 @@ function buildSystemPrompt(
     '- If something is processing, just show the answer when ready',
     'Example: Don\'t say "Checking your positions..." — just return the positions.',
     'Example: Don\'t say "API complained about format, retrying..." — just retry and show result.',
+    '',
+    ...(mcpServerNames && mcpServerNames.length > 0
+      ? [
+        'MCP SERVERS:',
+        `You have ${mcpServerNames.length} connected MCP server(s): ${mcpServerNames.join(', ')}.`,
+        'Their tools are available alongside your built-in tools. Use them naturally when relevant.',
+        'You can manage MCP servers with `add_mcp_server`, `remove_mcp_server`, `list_mcp_servers`, `search_mcp_servers`.',
+        'When the user asks to find or install an MCP server, use `search_mcp_servers` first to find it in the registry.',
+        'If you think an MCP server could help with the user\'s task, search for one — describe what you found and why it could help, then ask the user before installing.',
+        'After finding a server, use `add_mcp_server` to install it (stdio for npm packages, http/sse for remotes).',
+      ]
+      : [
+        'MCP SERVERS:',
+        'No MCP servers are currently connected.',
+        'When the user asks to find or install an MCP server, use `search_mcp_servers` to search the registry, then `add_mcp_server` to install.',
+        'If you think an MCP server could help with the user\'s task, search for one — describe what you found and why it could help, then ask the user before installing.',
+        'After finding a server, use `add_mcp_server` to configure it (stdio for npm packages, http/sse for remotes). It will be connected automatically.',
+      ]),
   ].join('\n');
 }
 
@@ -252,6 +272,10 @@ export async function runStart(): Promise<void> {
   const taskRepo = new TaskRepository(db);
   const messageRepo = new MessageRepository(db);
   const usageRepo = new UsageRepository(db);
+
+  // MCP lifecycle
+  let mcpManager: McpManager | null = null;
+  const rebuildRef: { current: (() => Promise<void>) | null } = { current: null };
 
   // Helper to create assistant from current config — single path for all providers
   async function buildAssistant(): Promise<Assistant> {
@@ -272,10 +296,27 @@ export async function runStart(): Promise<void> {
 
     // Add evolve_skill and dynamic skills
     const dynamicSkills = await loadDynamicSkills(SKILLS_DIR);
+
+    // Connect MCP servers
+    if (mcpManager) await mcpManager.closeAll();
+    const mcpServers = configManager.getMcpServers();
+    let mcpTools = {};
+    let mcpServerNames: string[] = [];
+    if (Object.keys(mcpServers).length > 0) {
+      mcpManager = new McpManager();
+      await mcpManager.initialize(mcpServers);
+      mcpTools = await mcpManager.getTools();
+      mcpServerNames = mcpManager.getConnectedServers();
+    } else {
+      mcpManager = null;
+    }
+
     const tools = {
       ...builtinTools,
       evolve_skill: createEvolveTool(SKILLS_DIR, ai),
       ...dynamicSkills,
+      ...mcpTools,
+      ...createMcpManagementTools(configManager, rebuildRef),
     };
 
     const systemPrompt = buildSystemPrompt(
@@ -285,6 +326,7 @@ export async function runStart(): Promise<void> {
       profile?.birthday,
       ai.provider,
       ai.model,
+      mcpServerNames,
     );
 
     return new Assistant({
@@ -401,6 +443,7 @@ export async function runStart(): Promise<void> {
     assistant = newAssistant;
     bot.setAssistant(newAssistant);
   }
+  rebuildRef.current = rebuildAndSet;
 
   if (hasAi) {
     console.log(`Provider: ${configManager.getConfig().ai!.provider} (${configManager.getModel()})`);
@@ -411,8 +454,20 @@ export async function runStart(): Promise<void> {
   } else {
     console.log('No AI provider configured. Onboarding will start in Telegram.');
   }
+  const currentMcp = mcpManager as McpManager | null;
+  const mcpCount = currentMcp ? currentMcp.getConnectedServers().length : 0;
+  if (mcpCount > 0) console.log(`MCP servers: ${mcpCount} connected`);
   console.log(`Timezone: ${configManager.getConfig().timezone}`);
   console.log(`Resource monitoring: ${configManager.isResourceMonitorEnabled() ? 'enabled' : 'disabled'}`);
   console.log('');
+
+  // Graceful shutdown: close MCP connections
+  const cleanup = async () => {
+    if (mcpManager) await mcpManager.closeAll();
+    process.exit(0);
+  };
+  process.on('SIGINT', cleanup);
+  process.on('SIGTERM', cleanup);
+
   await bot.start();
 }
