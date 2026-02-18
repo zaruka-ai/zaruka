@@ -15,6 +15,9 @@ async function executeStream(opts) {
         messages: opts.messages,
         tools: opts.tools,
         stopWhen: stepCountIs(opts.maxSteps),
+        // ChatGPT backend doesn't persist items — tell the SDK to send full
+        // content instead of item_reference on each step.  Harmless for other providers.
+        providerOptions: { openai: { store: false } },
         onError: ({ error }) => {
             streamError = error;
             console.error(error);

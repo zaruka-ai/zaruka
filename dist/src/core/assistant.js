@@ -1,4 +1,5 @@
 import { runAgent } from '../ai/agent.js';
+import { createModel } from '../ai/model-factory.js';
 const MAX_TOOL_ROUNDS = 10;
 /**
  * Rough token budget for context window.
@@ -14,34 +15,74 @@ function getModelId(model) {
 function estimateTokens(text) {
     return Math.ceil(text.length / 4);
 }
+/** Patterns that indicate the error is provider-side and worth retrying with a fallback. */
+const RETRIABLE_PATTERNS = [
+    // Rate limit
+    /\b429\b/, /rate.?limit/i, /quota/i, /RESOURCE_EXHAUSTED/i,
+    // Auth
+    /\b401\b/, /\b403\b/, /unauthorized/i, /forbidden/i,
+    // Server errors
+    /\b500\b/, /\b502\b/, /\b503\b/, /\b504\b/, /overloaded/i,
+    // Network
+    /timeout/i, /ETIMEDOUT/i, /ECONNRESET/i, /ECONNREFUSED/i,
+];
+function isRetriableForFailover(err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return RETRIABLE_PATTERNS.some((re) => re.test(msg));
+}
 export class Assistant {
     model;
     tools;
     systemPrompt;
     onUsage;
+    fallbackConfigs;
     constructor(opts) {
         this.model = opts.model;
         this.tools = opts.tools;
         this.systemPrompt = opts.systemPrompt;
         this.onUsage = opts.onUsage;
+        this.fallbackConfigs = opts.fallbackConfigs ?? [];
     }
     async process(userMessage, history) {
         const messages = this.buildMessages(userMessage, history);
-        const { text, usage } = await runAgent({
-            model: this.model,
-            system: this.systemPrompt,
-            messages,
-            tools: this.tools,
-            maxSteps: MAX_TOOL_ROUNDS,
-        });
-        if (this.onUsage) {
-            this.onUsage({
-                model: getModelId(this.model),
-                inputTokens: usage.inputTokens,
-                outputTokens: usage.outputTokens,
-            });
+        // Try primary model first, then fallbacks on retriable errors
+        let lastError;
+        const attempts = [
+            { model: this.model, label: 'primary' },
+            ...this.fallbackConfigs.map((cfg) => ({
+                model: createModel(cfg),
+                label: `${cfg.provider}/${cfg.model}`,
+            })),
+        ];
+        for (const attempt of attempts) {
+            try {
+                const { text, usage } = await runAgent({
+                    model: attempt.model,
+                    system: this.systemPrompt,
+                    messages,
+                    tools: this.tools,
+                    maxSteps: MAX_TOOL_ROUNDS,
+                });
+                if (this.onUsage) {
+                    this.onUsage({
+                        model: getModelId(attempt.model),
+                        inputTokens: usage.inputTokens,
+                        outputTokens: usage.outputTokens,
+                    });
+                }
+                return text;
+            }
+            catch (err) {
+                lastError = err;
+                if (!isRetriableForFailover(err) || attempt === attempts[attempts.length - 1]) {
+                    throw err;
+                }
+                const errMsg = err instanceof Error ? err.message : String(err);
+                console.warn(`[failover] ${attempt.label} failed (${errMsg}), trying next provider...`);
+            }
         }
-        return text;
+        // Should never reach here, but just in case
+        throw lastError;
     }
     buildMessages(userMessage, history) {
         // Estimate fixed overhead: system prompt + tool definitions

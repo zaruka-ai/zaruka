@@ -1,4 +1,5 @@
 import type { LanguageModel, ToolSet } from 'ai';
+import { type AiConfig } from '../ai/model-factory.js';
 export interface ChatMessage {
     role: 'user' | 'assistant';
     text: string;
@@ -15,11 +16,13 @@ export declare class Assistant {
     private tools;
     private systemPrompt;
     private onUsage?;
+    private fallbackConfigs;
     constructor(opts: {
         model: LanguageModel;
         tools: ToolSet;
         systemPrompt: string;
         onUsage?: UsageCallback;
+        fallbackConfigs?: AiConfig[];
     });
     process(userMessage: string, history?: ChatMessage[]): Promise<string>;
     private buildMessages;
