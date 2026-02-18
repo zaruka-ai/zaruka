@@ -334,10 +334,15 @@ export async function runStart(): Promise<void> {
       mcpServerNames,
     );
 
+    // Collect fallback configs from saved providers (excluding the current one)
+    const fallbackConfigs = Object.values(cfg.savedProviders ?? {})
+      .filter((p) => p.provider !== ai.provider);
+
     return new Assistant({
       model,
       tools,
       systemPrompt,
+      fallbackConfigs,
       onUsage: (usage) => {
         usageRepo.track(usage.model, usage.inputTokens, usage.outputTokens, 0);
       },
