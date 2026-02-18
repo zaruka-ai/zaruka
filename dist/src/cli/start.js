@@ -7,6 +7,7 @@ import { createModel } from '../ai/model-factory.js';
 import { createAllTools } from '../ai/tools.js';
 import { createEvolveTool } from '../mcp/evolve-tool.js';
 import { loadDynamicSkills } from '../skills/dynamic-loader.js';
+import { createSkillManagementTools } from '../skills/skill-tools.js';
 import { getDb } from '../db/schema.js';
 import { TaskRepository } from '../db/repository.js';
 import { MessageRepository } from '../db/message-repository.js';
@@ -231,6 +232,9 @@ function buildSystemPrompt(timezone, language, userName, birthday, provider, mod
                 'If you think an MCP server could help with the user\'s task, search for one — describe what you found and why it could help, then ask the user before installing.',
                 'After finding a server, use `add_mcp_server` to configure it (stdio for npm packages, http/sse for remotes). It will be connected automatically.',
             ]),
+        '',
+        'SKILLS:',
+        'You can create new skills with `evolve_skill`, list installed skills with `list_skills`, and remove skills with `remove_skill`.',
     ].join('\n');
 }
 export async function runStart() {
@@ -284,6 +288,7 @@ export async function runStart() {
             ...dynamicSkills,
             ...mcpTools,
             ...createMcpManagementTools(configManager, rebuildRef),
+            ...createSkillManagementTools(SKILLS_DIR, rebuildRef),
         };
         const systemPrompt = buildSystemPrompt(cfg.timezone, configManager.getLanguage(), profile?.name, profile?.birthday, ai.provider, ai.model, mcpServerNames);
         return new Assistant({
