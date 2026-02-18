@@ -8,7 +8,6 @@
   },
   "type": "module",
   "scripts": {
-
     "build": "tsc",
     "dev": "tsx watch src/cli/index.ts start",
     "start": "node dist/src/cli/index.js start",
@@ -24,7 +23,6 @@
     "@ai-sdk/mcp": "^1.0.21",
     "@ai-sdk/openai": "^3.0.29",
     "@anthropic-ai/sdk": "^0.39.0",
-    "sherpa-onnx-node": "^1.12.25",
     "ai": "^6.0.86",
     "better-sqlite3": "^11.7.0",
     "commander": "^13.1.0",
@@ -32,6 +30,7 @@
     "node-cron": "^3.0.3",
     "openai": "^4.82.0",
     "sharp": "^0.34.1",
+    "sherpa-onnx-node": "^1.12.25",
     "telegraf": "^4.16.3",
     "zod": "^4.3.6"
   },
@@ -39,7 +38,6 @@
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.12.0",
     "@types/node-cron": "^3.0.11",
-
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
   },
