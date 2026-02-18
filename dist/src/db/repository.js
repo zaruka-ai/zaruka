@@ -132,6 +132,10 @@ export class TaskRepository {
       WHERE id = @id
     `).run({ id, nextDate });
     }
+    /** Find an active task whose title matches (case-insensitive substring). */
+    findActiveByTitle(substring) {
+        return this.db.prepare("SELECT * FROM tasks WHERE status = 'active' AND title LIKE '%' || @sub || '%' COLLATE NOCASE ORDER BY created_at DESC LIMIT 1").get({ sub: substring });
+    }
     count(status) {
         if (status) {
             return this.db.prepare('SELECT COUNT(*) as cnt FROM tasks WHERE status = ?').get(status).cnt;

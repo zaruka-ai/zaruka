@@ -24,6 +24,8 @@ export declare class TaskRepository {
     getDueNow(timezone: string): Task[];
     /** Advance a recurring task to the next occurrence date. */
     advanceRecurrence(id: number): void;
+    /** Find an active task whose title matches (case-insensitive substring). */
+    findActiveByTitle(substring: string): Task | undefined;
     count(status?: string): number;
 }
 //# sourceMappingURL=repository.d.ts.map
