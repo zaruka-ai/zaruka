@@ -22,7 +22,7 @@ export function createAllTools(deps) {
         ...createWebTools(),
         ...createResourceTools(),
         ...createShellTools(),
-        ...createHistoryTools(deps.messageRepo),
+        ...createHistoryTools(deps.messageRepo, deps.configManager),
         ...createUsageTools(deps.usageRepo),
         ...createCredentialTools(),
         ...createExecuteSkillTools(deps.skillsDir),
@@ -480,8 +480,30 @@ function createShellTools() {
     };
 }
 // === History Tools ===
-function createHistoryTools(messageRepo) {
+function createHistoryTools(messageRepo, configManager) {
     return {
+        get_recent_messages: tool({
+            description: 'Get recent messages from the current conversation for additional context. '
+                + 'You only see the last 2 exchanges by default. Call this when the user references '
+                + 'something from earlier ("as I said", "continue", "what about X we discussed").',
+            inputSchema: z.object({
+                count: z.number().optional().describe('Number of messages to retrieve (default 20, max 50)'),
+            }),
+            execute: async (args) => {
+                const chatId = configManager.getChatId();
+                if (!chatId)
+                    return JSON.stringify({ error: 'No active chat' });
+                const count = Math.min(args.count ?? 20, 50);
+                const messages = messageRepo.getRecent(chatId, count);
+                return JSON.stringify({
+                    messages: messages.map((m) => ({
+                        role: m.role,
+                        text: m.text.length > 500 ? m.text.slice(0, 500) + '...' : m.text,
+                        date: m.created_at,
+                    })),
+                });
+            },
+        }),
         search_conversation_history: tool({
             description: 'Search through past conversation history. Use this when the user asks about previous conversations, '
                 + 'e.g. "what did I ask about last week?", "find our conversation about X", "what did you recommend for Y?"',
