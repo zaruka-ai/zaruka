@@ -31,8 +31,9 @@ export async function handleProviderSelected(handler, ctx, provider) {
         const providerLabel = provider === 'anthropic' ? 'Claude' : 'ChatGPT';
         const { Markup } = await import('telegraf');
         await ctx.editMessageText('How would you like to authenticate?', Markup.inlineKeyboard([
-            [Markup.button.callback('API Key (pay-as-you-go)', 'onboard_auth:api_key')],
             [Markup.button.callback(`Sign in with ${providerLabel} (subscription)`, 'onboard_auth:oauth')],
+            [Markup.button.callback('API Key (pay-as-you-go)', 'onboard_auth:api_key')],
+            [Markup.button.callback('« Back', 'onboard_back_provider')],
         ]));
     }
     else {
