@@ -74,6 +74,8 @@ export const UI_STRINGS = {
     'cmd.cancel_done': '❌ Cancelled.',
     'cmd.cancel_threshold': '❌ Cancelled. Threshold not changed.',
     'cmd.cancel_nothing': 'Nothing to cancel.',
+    // Long task notification
+    'processing.working': '⏳ Working on it…',
     // Errors
     'error.no_ai': 'AI is not configured yet. Send /start to set up.',
     'error.voice_transcribe': 'Could not transcribe the voice message. Please try again.',
@@ -118,6 +120,11 @@ export function t(cm, key, params) {
     if (!params)
         return str;
     return str.replace(/\{(\w+)\}/g, (_, k) => params[k] ?? `{${k}}`);
+}
+/** Check if the cached translations cover all current UI_STRINGS keys. */
+export function translationCacheComplete(cm) {
+    const keys = Object.keys(UI_STRINGS);
+    return keys.every((k) => cm.getTranslation(k) !== undefined);
 }
 /**
  * Translate all UI strings to the given language using the AI model.

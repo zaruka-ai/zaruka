@@ -52,6 +52,18 @@ export interface UserProfile {
     timezone?: string;
     birthday?: string;
 }
+export interface McpStdioConfig {
+    type?: 'stdio';
+    command: string;
+    args?: string[];
+    env?: Record<string, string>;
+}
+export interface McpHttpConfig {
+    type: 'http' | 'sse';
+    url: string;
+    headers?: Record<string, string>;
+}
+export type McpServerConfig = McpStdioConfig | McpHttpConfig;
 export type AiProvider = 'anthropic' | 'openai' | 'google' | 'deepseek' | 'groq' | 'xai' | 'openai-compatible';
 export type AiProviderConfig = {
     provider: AiProvider;
@@ -84,5 +96,7 @@ export interface ZarukaConfig {
         language: string;
         strings: Record<string, string>;
     };
+    /** MCP server configurations (Claude Desktop-compatible format). */
+    mcpServers?: Record<string, McpServerConfig>;
 }
 //# sourceMappingURL=types.d.ts.map

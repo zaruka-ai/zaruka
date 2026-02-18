@@ -16,7 +16,9 @@ import { TelegramBot } from '../bot/telegram.js';
 import { Scheduler } from '../scheduler/cron.js';
 import { createTranscriber } from '../audio/transcribe.js';
 import { startTokenRefreshLoop } from '../auth/token-refresh.js';
-import { translateUI } from '../bot/i18n.js';
+import { translateUI, translationCacheComplete } from '../bot/i18n.js';
+import { McpManager } from '../mcp/mcp-manager.js';
+import { createMcpManagementTools } from '../mcp/mcp-tools.js';
 const ZARUKA_DIR = process.env.ZARUKA_DATA_DIR || join(homedir(), '.zaruka');
 const CONFIG_PATH = join(ZARUKA_DIR, 'config.json');
 const SKILLS_DIR = join(ZARUKA_DIR, 'skills');
@@ -75,7 +77,7 @@ function getDefaultModel(provider) {
             return 'llama3';
     }
 }
-function buildSystemPrompt(timezone, language, userName, birthday, provider, model) {
+function buildSystemPrompt(timezone, language, userName, birthday, provider, model, mcpServerNames) {
     const langInstruction = language === 'auto'
         ? [
             'LANGUAGE: ALWAYS respond in the EXACT language the user writes in.',
@@ -144,6 +146,10 @@ function buildSystemPrompt(timezone, language, userName, birthday, provider, mod
         'Use the available tools for tasks, weather, shell commands, etc.',
         'When creating tasks with due dates, parse natural language dates relative to the current date.',
         '',
+        'CONTEXT RECALL: You see the last 30 messages. If the user refers to something you don\'t see in context '
+            + '(e.g. "ты же знаешь", "как мы обсуждали", "продолжай"), call search_conversation_history to find the relevant earlier messages. '
+            + 'NEVER say you don\'t have context or ask the user to repeat — search for it first.',
+        '',
         'CRITICAL RULES (follow in this exact order of priority):',
         '',
         '1. HONESTY ABOUT CAPABILITIES (HIGHEST PRIORITY — overrides ALL other rules):',
@@ -207,6 +213,24 @@ function buildSystemPrompt(timezone, language, userName, birthday, provider, mod
         '- If something is processing, just show the answer when ready',
         'Example: Don\'t say "Checking your positions..." — just return the positions.',
         'Example: Don\'t say "API complained about format, retrying..." — just retry and show result.',
+        '',
+        ...(mcpServerNames && mcpServerNames.length > 0
+            ? [
+                'MCP SERVERS:',
+                `You have ${mcpServerNames.length} connected MCP server(s): ${mcpServerNames.join(', ')}.`,
+                'Their tools are available alongside your built-in tools. Use them naturally when relevant.',
+                'You can manage MCP servers with `add_mcp_server`, `remove_mcp_server`, `list_mcp_servers`, `search_mcp_servers`.',
+                'When the user asks to find or install an MCP server, use `search_mcp_servers` first to find it in the registry.',
+                'If you think an MCP server could help with the user\'s task, search for one — describe what you found and why it could help, then ask the user before installing.',
+                'After finding a server, use `add_mcp_server` to install it (stdio for npm packages, http/sse for remotes).',
+            ]
+            : [
+                'MCP SERVERS:',
+                'No MCP servers are currently connected.',
+                'When the user asks to find or install an MCP server, use `search_mcp_servers` to search the registry, then `add_mcp_server` to install.',
+                'If you think an MCP server could help with the user\'s task, search for one — describe what you found and why it could help, then ask the user before installing.',
+                'After finding a server, use `add_mcp_server` to configure it (stdio for npm packages, http/sse for remotes). It will be connected automatically.',
+            ]),
     ].join('\n');
 }
 export async function runStart() {
@@ -220,6 +244,9 @@ export async function runStart() {
     const taskRepo = new TaskRepository(db);
     const messageRepo = new MessageRepository(db);
     const usageRepo = new UsageRepository(db);
+    // MCP lifecycle
+    let mcpManager = null;
+    const rebuildRef = { current: null };
     // Helper to create assistant from current config — single path for all providers
     async function buildAssistant() {
         const cfg = configManager.getConfig();
@@ -236,12 +263,29 @@ export async function runStart() {
         });
         // Add evolve_skill and dynamic skills
         const dynamicSkills = await loadDynamicSkills(SKILLS_DIR);
+        // Connect MCP servers
+        if (mcpManager)
+            await mcpManager.closeAll();
+        const mcpServers = configManager.getMcpServers();
+        let mcpTools = {};
+        let mcpServerNames = [];
+        if (Object.keys(mcpServers).length > 0) {
+            mcpManager = new McpManager();
+            await mcpManager.initialize(mcpServers);
+            mcpTools = await mcpManager.getTools();
+            mcpServerNames = mcpManager.getConnectedServers();
+        }
+        else {
+            mcpManager = null;
+        }
         const tools = {
             ...builtinTools,
             evolve_skill: createEvolveTool(SKILLS_DIR, ai),
             ...dynamicSkills,
+            ...mcpTools,
+            ...createMcpManagementTools(configManager, rebuildRef),
         };
-        const systemPrompt = buildSystemPrompt(cfg.timezone, configManager.getLanguage(), profile?.name, profile?.birthday, ai.provider, ai.model);
+        const systemPrompt = buildSystemPrompt(cfg.timezone, configManager.getLanguage(), profile?.name, profile?.birthday, ai.provider, ai.model, mcpServerNames);
         return new Assistant({
             model,
             tools,
@@ -262,7 +306,7 @@ export async function runStart() {
         const lang = configManager.getLanguage();
         if (lang !== 'auto' && lang !== 'English') {
             const cached = configManager.getTranslationLanguage();
-            if (cached !== lang) {
+            if (cached !== lang || !translationCacheComplete(configManager)) {
                 try {
                     const model = createModel(config.ai);
                     const strings = await translateUI(model, lang);
@@ -293,7 +337,7 @@ export async function runStart() {
         }
         else {
             const cached = configManager.getTranslationLanguage();
-            if (cached !== currentLang) {
+            if (cached !== currentLang || !translationCacheComplete(configManager)) {
                 try {
                     const ai = configManager.getConfig().ai;
                     if (ai) {
@@ -318,11 +362,10 @@ export async function runStart() {
     // Onboarding callback: called when user finishes AI setup in Telegram
     // Always provided so provider change from /settings also works
     async () => {
-        const newAssistant = await buildAssistant();
-        bot.setAssistant(newAssistant);
+        await rebuildAndSet();
         console.log(`Provider: ${configManager.getConfig().ai.provider} (${configManager.getModel()})`);
         if (configManager.getConfig().ai?.refreshToken) {
-            startTokenRefreshLoop(configManager);
+            startTokenRefreshLoop(configManager, rebuildAndSet);
             console.log('OAuth token refresh loop started.');
         }
         await refreshTranslations();
@@ -337,19 +380,38 @@ export async function runStart() {
     };
     // Set up scheduler for reminders + resource monitoring + action tasks
     new Scheduler(taskRepo, configManager.getConfig().timezone, notifyFn, configManager, executeAction);
+    // Rebuild the assistant with the latest config (used after token refresh)
+    async function rebuildAndSet() {
+        const newAssistant = await buildAssistant();
+        assistant = newAssistant;
+        bot.setAssistant(newAssistant);
+    }
+    rebuildRef.current = rebuildAndSet;
     if (hasAi) {
         console.log(`Provider: ${configManager.getConfig().ai.provider} (${configManager.getModel()})`);
         if (config.ai?.refreshToken) {
-            startTokenRefreshLoop(configManager);
+            startTokenRefreshLoop(configManager, rebuildAndSet);
             console.log('OAuth token refresh loop started.');
         }
     }
     else {
         console.log('No AI provider configured. Onboarding will start in Telegram.');
     }
+    const currentMcp = mcpManager;
+    const mcpCount = currentMcp ? currentMcp.getConnectedServers().length : 0;
+    if (mcpCount > 0)
+        console.log(`MCP servers: ${mcpCount} connected`);
     console.log(`Timezone: ${configManager.getConfig().timezone}`);
     console.log(`Resource monitoring: ${configManager.isResourceMonitorEnabled() ? 'enabled' : 'disabled'}`);
     console.log('');
+    // Graceful shutdown: close MCP connections
+    const cleanup = async () => {
+        if (mcpManager)
+            await mcpManager.closeAll();
+        process.exit(0);
+    };
+    process.on('SIGINT', cleanup);
+    process.on('SIGTERM', cleanup);
     await bot.start();
 }
 //# sourceMappingURL=start.js.map
