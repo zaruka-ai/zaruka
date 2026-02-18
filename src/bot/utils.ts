@@ -104,6 +104,12 @@ export async function resolveTimezoneFromCoords(lat: number, lon: number): Promi
   }
 }
 
+/** If text has an unclosed ``` code fence, append a closing one. */
+export function closeUnclosedCodeFences(text: string): string {
+  const count = (text.match(/```/g) || []).length;
+  return count % 2 === 1 ? text + '\n```' : text;
+}
+
 export function splitMessage(text: string, maxLength: number): string[] {
   if (text.length <= maxLength) return [text];
   const chunks: string[] = [];

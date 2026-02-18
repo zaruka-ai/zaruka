@@ -3,13 +3,29 @@ import type { ChatMessage } from '../core/assistant.js';
 import type { BotContext } from './bot-context.js';
 import { Markup } from 'telegraf';
 import { buildRateLimitMessage } from './providers.js';
-import { detectLanguage, splitMessage } from './utils.js';
+import { closeUnclosedCodeFences, detectLanguage, splitMessage } from './utils.js';
 import { t } from './i18n.js';
 
 /** Convert unsupported Markdown to Telegram-compatible format. */
 function toTelegramMarkdown(text: string): string {
   // Convert ### Header, ## Header, # Header → *Header*
   return text.replace(/^#{1,6}\s+(.+)$/gm, '*$1*');
+}
+
+/** Dedup: remember recently processed message IDs to ignore re-delivered updates after restarts. */
+const processedMessages = new Set<string>();
+const DEDUP_MAX = 200;
+
+function isDuplicate(chatId: number, messageId: number): boolean {
+  const key = `${chatId}:${messageId}`;
+  if (processedMessages.has(key)) return true;
+  processedMessages.add(key);
+  // Evict oldest entries when the set grows too large
+  if (processedMessages.size > DEDUP_MAX) {
+    const first = processedMessages.values().next().value!;
+    processedMessages.delete(first);
+  }
+  return false;
 }
 
 export function registerHandlers(bot: Telegraf, ctx: BotContext): void {
@@ -29,6 +45,7 @@ export function registerHandlers(bot: Telegraf, ctx: BotContext): void {
   });
 
   bot.on('voice', (tCtx) => {
+    if (isDuplicate(tCtx.chat.id, tCtx.message.message_id)) return;
     ctx.captureChatId(tCtx.chat.id);
     if (!ctx.getAssistant()) {
       tCtx.reply(t(ctx.configManager, 'error.no_ai')).catch(() => {});
@@ -39,6 +56,7 @@ export function registerHandlers(bot: Telegraf, ctx: BotContext): void {
 
   bot.on('text', (tCtx) => {
     const chatId = tCtx.chat.id;
+    if (isDuplicate(chatId, tCtx.message.message_id)) return;
     ctx.captureChatId(chatId);
     const text = tCtx.message.text;
 
@@ -163,10 +181,6 @@ async function handleVoice(tCtx: any, ctx: BotContext): Promise<void> {
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const NOTIFY_DELAY_MS = 8_000;    // Tell the user we're working after 8 s
-
-
 /**
  * Pool of AI-generated "working on it" messages per language.
  * Generated once on first use, then served from cache.
@@ -207,9 +221,182 @@ function ensureWorkingPool(lang: string, ctx: BotContext): void {
   });
 }
 
+/** Max length for a single Telegram message before splitting. */
+const SPLIT_THRESHOLD = 3800;
+/** Minimum interval between editMessageText calls (ms). */
+const EDIT_THROTTLE_MS = 1500;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+class TelegramStreamWriter {
+  private tCtx: any;
+  private chatId: number;
+  private messageId: number | null = null;
+  private buffer = '';
+  private editTimer: ReturnType<typeof setInterval> | null = null;
+  private typingTimer: ReturnType<typeof setInterval> | null = null;
+  private lastEditText = '';
+  private finalizedMessages: number[] = [];
+
+  constructor(tCtx: any) {
+    this.tCtx = tCtx;
+    this.chatId = tCtx.chat.id;
+  }
+
+  /** Send the initial "working" message and start timers. */
+  async start(initialText: string): Promise<void> {
+    const sent = await this.tCtx.reply(initialText);
+    this.messageId = sent.message_id;
+
+    this.typingTimer = setInterval(() => {
+      this.tCtx.sendChatAction('typing').catch(() => {});
+    }, 4000);
+
+    this.editTimer = setInterval(() => {
+      this.flushEdit().catch(() => {});
+    }, EDIT_THROTTLE_MS);
+  }
+
+  /** Called for each text delta from the stream. */
+  onDelta(delta: string): void {
+    this.buffer += delta;
+  }
+
+  /** Throttled edit — sends current buffer to Telegram. */
+  private async flushEdit(): Promise<void> {
+    if (!this.messageId || !this.buffer || this.buffer === this.lastEditText) return;
+
+    // If the buffer exceeds the split threshold, finalize the current message
+    // and start a new one for the overflow.
+    if (this.buffer.length > SPLIT_THRESHOLD) {
+      // Find a good split point
+      const splitAt = this.buffer.lastIndexOf('\n', SPLIT_THRESHOLD);
+      const cutAt = (splitAt > SPLIT_THRESHOLD / 2) ? splitAt : SPLIT_THRESHOLD;
+      const head = this.buffer.slice(0, cutAt);
+      const tail = this.buffer.slice(cutAt);
+
+      // Finalize the current message with the head portion
+      await this.editMessage(this.messageId, closeUnclosedCodeFences(toTelegramMarkdown(head)));
+      this.finalizedMessages.push(this.messageId);
+
+      // Start a new message for the rest
+      const sent = await this.tCtx.reply('…');
+      this.messageId = sent.message_id;
+      this.buffer = tail;
+      this.lastEditText = '';
+      return;
+    }
+
+    const display = closeUnclosedCodeFences(toTelegramMarkdown(this.buffer));
+    await this.editMessage(this.messageId, display);
+    this.lastEditText = this.buffer;
+  }
+
+  /** Final edit with the authoritative complete text from the SDK. */
+  async finish(finalText: string): Promise<{ hasMoreOptions: boolean }> {
+    this.stopTimers();
+
+    const hasMoreOptions = finalText.includes('[MORE_OPTIONS]');
+    const cleaned = finalText.replace(/\[MORE_OPTIONS\]\s*/g, '').trimEnd();
+    const formatted = toTelegramMarkdown(cleaned);
+    const chunks = splitMessage(formatted, 4000);
+
+    // Edit the first message with the first chunk (or a finalized message's content)
+    // If there were finalized messages, they already have their content. We need to
+    // handle the case where the final text differs from the streamed buffer.
+    // Strategy: edit ALL finalized messages away isn't practical, so we just
+    // edit the current active message with the final text, split as needed.
+
+    if (chunks.length === 1 && this.finalizedMessages.length === 0) {
+      // Simple case: everything fits in the one message
+      const extra: Record<string, unknown> = { parse_mode: 'Markdown' };
+      if (hasMoreOptions) {
+        extra.reply_markup = Markup.inlineKeyboard([
+          [Markup.button.callback('🔍 Show more', 'more_options')],
+        ]).reply_markup;
+      }
+      if (this.messageId) {
+        await this.editMessage(this.messageId, chunks[0], extra);
+      }
+    } else {
+      // Multi-chunk: edit current message with first remaining chunk, send rest as new
+      // First, handle existing finalized messages — they already contain streamed content
+      // that is close to final. We only need to handle the current active message and
+      // any additional chunks beyond what's already sent.
+
+      // Re-split the full final text and distribute across all messages
+      const allMsgIds = [...this.finalizedMessages, this.messageId!];
+
+      for (let i = 0; i < chunks.length; i++) {
+        const isLast = i === chunks.length - 1;
+        const extra: Record<string, unknown> = { parse_mode: 'Markdown' };
+        if (isLast && hasMoreOptions) {
+          extra.reply_markup = Markup.inlineKeyboard([
+            [Markup.button.callback('🔍 Show more', 'more_options')],
+          ]).reply_markup;
+        }
+
+        if (i < allMsgIds.length) {
+          // Edit existing message
+          await this.editMessage(allMsgIds[i], chunks[i], extra);
+        } else {
+          // Send new message for overflow chunks
+          await this.tCtx.reply(chunks[i], extra).catch(() => {
+            return this.tCtx.reply(chunks[i]);
+          });
+        }
+      }
+    }
+
+    return { hasMoreOptions };
+  }
+
+  /** Edit message with error text on failure. */
+  async abort(errorText: string): Promise<void> {
+    this.stopTimers();
+    if (this.messageId) {
+      try {
+        await this.tCtx.telegram.editMessageText(
+          this.chatId, this.messageId, undefined, errorText,
+        );
+      } catch {
+        await this.tCtx.reply(errorText).catch(() => {});
+      }
+    } else {
+      await this.tCtx.reply(errorText).catch(() => {});
+    }
+  }
+
+  private async editMessage(
+    msgId: number,
+    text: string,
+    extra?: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      await this.tCtx.telegram.editMessageText(
+        this.chatId, msgId, undefined, text,
+        { parse_mode: 'Markdown', ...extra },
+      );
+    } catch {
+      // Markdown failed — retry without parse_mode
+      try {
+        await this.tCtx.telegram.editMessageText(
+          this.chatId, msgId, undefined, text,
+          extra ?? {},
+        );
+      } catch { /* ignore — message unchanged or deleted */ }
+    }
+  }
+
+  private stopTimers(): void {
+    if (this.editTimer) { clearInterval(this.editTimer); this.editTimer = null; }
+    if (this.typingTimer) { clearInterval(this.typingTimer); this.typingTimer = null; }
+  }
+}
+
 /** Track how many AI calls are active per chat. */
 const activeTasks = new Map<number, number>();
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function processAndReply(tCtx: any, userMessage: string, ctx: BotContext, msgLang?: string): Promise<void> {
   const chatId: number = tCtx.chat.id;
   console.log(`[chat:${chatId}] User: ${userMessage.slice(0, 100)}${userMessage.length > 100 ? '...' : ''}`);
@@ -221,7 +408,7 @@ async function processAndReply(tCtx: any, userMessage: string, ctx: BotContext, 
   ensureWorkingPool(lang, ctx);
 
   // Build history; if another task is already running, hint AI not to repeat it
-  const recentMessages = ctx.messageRepo.getRecent(chatId, 30);
+  const recentMessages = ctx.messageRepo.getRecent(chatId, 4);
   const history: ChatMessage[] = recentMessages.map((m) => ({ role: m.role, text: m.text }));
   const busy = (activeTasks.get(chatId) ?? 0) > 0;
   const message = busy
@@ -231,54 +418,31 @@ async function processAndReply(tCtx: any, userMessage: string, ctx: BotContext, 
 
   activeTasks.set(chatId, (activeTasks.get(chatId) ?? 0) + 1);
 
-  // "Still working" notification for every message that takes > 8s
-  const notifyTimer = setTimeout(async () => {
-    try {
-      await tCtx.reply(pickWorkingMessage(lang));
-    } catch { /* ignore */ }
-  }, NOTIFY_DELAY_MS);
-
-  const typingInterval = setInterval(() => {
-    tCtx.sendChatAction('typing').catch(() => {});
-  }, 4000);
+  const writer = new TelegramStreamWriter(tCtx);
 
   try {
-    await tCtx.sendChatAction('typing');
-    const response = await ctx.getAssistant()!.process(message, history);
-    clearTimeout(notifyTimer);
-    clearInterval(typingInterval);
+    await writer.start(pickWorkingMessage(lang));
+
+    const response = await ctx.getAssistant()!.processStream(
+      message,
+      history,
+      { onTextDelta: (d) => writer.onDelta(d) },
+    );
 
     if (!response) {
       console.warn(`[chat:${chatId}] Assistant returned empty response for: ${userMessage.slice(0, 60)}`);
+      // Save a placeholder so the unanswered user message doesn't cause
+      // the model to re-attempt it on the next turn.
+      ctx.messageRepo.save(chatId, 'assistant', '[error: failed to generate a response]');
+      await writer.abort(t(ctx.configManager, 'error.processing'));
     } else {
       console.log(`[chat:${chatId}] Assistant: ${response.slice(0, 100)}${response.length > 100 ? '...' : ''}`);
       ctx.messageRepo.save(chatId, 'assistant', response);
-    }
-
-    if (response) {
-      let text = response;
-      const hasMoreOptions = text.includes('[MORE_OPTIONS]');
-      text = text.replace(/\[MORE_OPTIONS\]\s*/g, '').trimEnd();
-
-      const formatted = toTelegramMarkdown(text);
-      const chunks = splitMessage(formatted, 4000);
-      for (let i = 0; i < chunks.length; i++) {
-        const isLast = i === chunks.length - 1;
-        const extra: Record<string, unknown> = { parse_mode: 'Markdown' };
-        if (isLast && hasMoreOptions) {
-          extra.reply_markup = Markup.inlineKeyboard([
-            [Markup.button.callback('🔍 Show more', 'more_options')],
-          ]).reply_markup;
-        }
-        await tCtx.reply(chunks[i], extra).catch(() => {
-          return tCtx.reply(chunks[i]);
-        });
-      }
+      await writer.finish(response);
     }
   } catch (err) {
-    clearTimeout(notifyTimer);
-    clearInterval(typingInterval);
     console.error('Error processing message:', err);
+    ctx.messageRepo.save(chatId, 'assistant', '[error: failed to generate a response]');
 
     // Walk the error chain to find rate-limit info (RetryError → APICallError)
     const errorMsg = err instanceof Error ? err.message : String(err);
@@ -294,9 +458,9 @@ async function processAndReply(tCtx: any, userMessage: string, ctx: BotContext, 
 
     if (isRateLimit) {
       const config = ctx.configManager.getConfig();
-      await tCtx.reply(buildRateLimitMessage(config.ai?.provider, !!config.ai?.authToken, errorMsg));
+      await writer.abort(buildRateLimitMessage(config.ai?.provider, !!config.ai?.authToken, errorMsg));
     } else {
-      await tCtx.reply(t(ctx.configManager, 'error.processing'));
+      await writer.abort(t(ctx.configManager, 'error.processing'));
     }
   } finally {
     const count = (activeTasks.get(chatId) ?? 1) - 1;

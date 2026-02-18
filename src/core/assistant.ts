@@ -1,5 +1,5 @@
 import type { LanguageModel, ToolSet, ModelMessage } from 'ai';
-import { runAgent } from '../ai/agent.js';
+import { runAgent, runAgentStream, type StreamCallbacks } from '../ai/agent.js';
 import { createModel, type AiConfig } from '../ai/model-factory.js';
 
 const MAX_TOOL_ROUNDS = 10;
@@ -112,6 +112,55 @@ export class Assistant {
     }
 
     // Should never reach here, but just in case
+    throw lastError;
+  }
+
+  async processStream(
+    userMessage: string,
+    history: ChatMessage[] | undefined,
+    callbacks: StreamCallbacks,
+  ): Promise<string> {
+    const messages = this.buildMessages(userMessage, history);
+
+    let lastError: unknown;
+    const attempts: Array<{ model: LanguageModel; label: string }> = [
+      { model: this.model, label: 'primary' },
+      ...this.fallbackConfigs.map((cfg) => ({
+        model: createModel(cfg),
+        label: `${cfg.provider}/${cfg.model}`,
+      })),
+    ];
+
+    for (const attempt of attempts) {
+      try {
+        const { text, usage } = await runAgentStream({
+          model: attempt.model,
+          system: this.systemPrompt,
+          messages,
+          tools: this.tools,
+          maxSteps: MAX_TOOL_ROUNDS,
+          callbacks,
+        });
+
+        if (this.onUsage) {
+          this.onUsage({
+            model: getModelId(attempt.model),
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens,
+          });
+        }
+
+        return text;
+      } catch (err) {
+        lastError = err;
+        if (!isRetriableForFailover(err) || attempt === attempts[attempts.length - 1]) {
+          throw err;
+        }
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.warn(`[failover] ${attempt.label} failed (${errMsg}), trying next provider...`);
+      }
+    }
+
     throw lastError;
   }
 

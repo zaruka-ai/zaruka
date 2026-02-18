@@ -49,6 +49,14 @@ async function executeStream(opts) {
         }
         fullText = parts.join('\n\n');
     }
+    if (!fullText) {
+        const toolCallCount = steps.reduce((n, s) => n + s.toolCalls.length, 0);
+        console.warn(`[agent] Empty text — steps: ${steps.length}, toolCalls: ${toolCallCount}, `
+            + `streamError: ${streamError ? 'yes' : 'no'}, `
+            + `usage: ${usage.inputTokens ?? 0}in/${usage.outputTokens ?? 0}out`);
+        if (streamError)
+            throw streamError;
+    }
     return {
         text: fullText,
         usedTools: steps.some((s) => s.toolCalls.length > 0),
@@ -57,6 +65,98 @@ async function executeStream(opts) {
             outputTokens: usage.outputTokens ?? 0,
         },
     };
+}
+async function executeStreamWithCallbacks(opts) {
+    let streamError = null;
+    const result = streamText({
+        model: opts.model,
+        system: opts.system,
+        messages: opts.messages,
+        tools: opts.tools,
+        stopWhen: stepCountIs(opts.maxSteps),
+        providerOptions: { openai: { store: false } },
+        onError: ({ error }) => {
+            streamError = error;
+            console.error(error);
+        },
+    });
+    // Iterate the text stream and deliver deltas via callback
+    try {
+        for await (const delta of result.textStream) {
+            if (delta)
+                opts.callbacks.onTextDelta(delta);
+        }
+    }
+    catch (err) {
+        throw streamError ?? err;
+    }
+    let usage;
+    let steps;
+    let text;
+    try {
+        [text, usage, steps] = await Promise.all([
+            result.text,
+            result.usage,
+            result.steps,
+        ]);
+    }
+    catch (err) {
+        throw streamError ?? err;
+    }
+    let fullText = text || '';
+    if (!fullText) {
+        const parts = [];
+        for (const step of steps) {
+            if (step.text)
+                parts.push(step.text);
+        }
+        fullText = parts.join('\n\n');
+    }
+    if (!fullText) {
+        const toolCallCount = steps.reduce((n, s) => n + s.toolCalls.length, 0);
+        console.warn(`[agent] Empty text — steps: ${steps.length}, toolCalls: ${toolCallCount}, `
+            + `streamError: ${streamError ? 'yes' : 'no'}, `
+            + `usage: ${usage.inputTokens ?? 0}in/${usage.outputTokens ?? 0}out`);
+        if (streamError)
+            throw streamError;
+    }
+    return {
+        text: fullText,
+        usedTools: steps.some((s) => s.toolCalls.length > 0),
+        usage: {
+            inputTokens: usage.inputTokens ?? 0,
+            outputTokens: usage.outputTokens ?? 0,
+        },
+    };
+}
+export async function runAgentStream(opts) {
+    const maxSteps = opts.maxSteps ?? 10;
+    try {
+        return await executeStreamWithCallbacks({ ...opts, maxSteps, callbacks: opts.callbacks });
+    }
+    catch (err) {
+        if (!isPromptTooLong(err))
+            throw err;
+        console.warn('Prompt too long — retrying with only the last user message');
+        const lastUserMsg = [...opts.messages].reverse().find((m) => m.role === 'user');
+        if (!lastUserMsg)
+            throw err;
+        try {
+            return await executeStreamWithCallbacks({
+                ...opts,
+                messages: [lastUserMsg],
+                maxSteps,
+                callbacks: opts.callbacks,
+            });
+        }
+        catch (retryErr) {
+            if (isPromptTooLong(retryErr)) {
+                throw new Error('The prompt is too long even with a single message. '
+                    + 'Try disconnecting some MCP servers or shortening your message.');
+            }
+            throw retryErr;
+        }
+    }
 }
 export async function runAgent(opts) {
     const maxSteps = opts.maxSteps ?? 10;
