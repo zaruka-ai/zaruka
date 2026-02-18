@@ -1,21 +1,21 @@
 const WHISPER_MODEL_NAME = 'sherpa-onnx-whisper-small';
 const WHISPER_MODEL_URL = `https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/${WHISPER_MODEL_NAME}.tar.bz2`;
 export async function createTranscriber(opts) {
-    // 1. OpenAI Whisper API (paid)
-    if (opts.openaiApiKey) {
-        console.log('Voice transcription: OpenAI Whisper');
-        return createCloudTranscriber(opts.openaiApiKey, 'whisper-1', opts.openaiBaseUrl);
-    }
-    // 2. Groq Whisper API (free)
-    if (opts.groqApiKey) {
-        console.log('Voice transcription: Groq Whisper');
-        return createCloudTranscriber(opts.groqApiKey, 'whisper-large-v3', 'https://api.groq.com/openai/v1');
-    }
-    // 3. Local Whisper via sherpa-onnx (free, offline)
+    // 1. Local Whisper via sherpa-onnx (free, offline, preferred)
     const local = await createLocalTranscriber();
     if (local) {
         console.log('Voice transcription: local Whisper (whisper-small, sherpa-onnx)');
         return local;
+    }
+    // 2. OpenAI Whisper API (paid)
+    if (opts.openaiApiKey) {
+        console.log('Voice transcription: OpenAI Whisper');
+        return createCloudTranscriber(opts.openaiApiKey, 'whisper-1', opts.openaiBaseUrl);
+    }
+    // 3. Groq Whisper API (free)
+    if (opts.groqApiKey) {
+        console.log('Voice transcription: Groq Whisper');
+        return createCloudTranscriber(opts.groqApiKey, 'whisper-large-v3', 'https://api.groq.com/openai/v1');
     }
     console.log('Voice transcription: disabled (ffmpeg required for local mode). Set GROQ_API_KEY for free cloud transcription.');
     return undefined;
