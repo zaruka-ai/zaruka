@@ -71,7 +71,16 @@ function createTaskTools(repo: TaskRepository): ToolSet {
         description: z.string().optional().describe('Task description'),
         due_date: z.string().optional().describe('Due date in YYYY-MM-DD format'),
         due_time: z.string().optional().describe('Due time in HH:MM format (default: 12:00)'),
-        recurrence: z.string().optional().describe("Recurrence rule: 'daily', 'weekly', 'monthly', 'yearly', or null for one-time"),
+        recurrence: z.string().optional().describe(
+          'Recurrence rule in RRULE format (RFC 5545). Examples: '
+          + '"FREQ=DAILY" (every day), '
+          + '"FREQ=HOURLY;INTERVAL=3" (every 3 hours), '
+          + '"FREQ=WEEKLY;BYDAY=MO,WE,FR" (Mon/Wed/Fri), '
+          + '"FREQ=MONTHLY;BYDAY=1MO" (first Monday of month), '
+          + '"FREQ=DAILY;COUNT=10" (10 times then stop), '
+          + '"FREQ=DAILY;UNTIL=20261231T235959Z" (until Dec 31 2026). '
+          + 'Legacy values "daily", "weekly", "monthly", "yearly" also accepted.',
+        ),
         action: z.string().optional().describe('AI instruction for the bot to execute on schedule (null = simple reminder)'),
       }),
       execute: async (args) => {
@@ -153,7 +162,16 @@ function createTaskTools(repo: TaskRepository): ToolSet {
         description: z.string().optional().describe('New description'),
         due_date: z.string().optional().describe('New due date in YYYY-MM-DD format'),
         due_time: z.string().optional().describe('New due time in HH:MM format'),
-        recurrence: z.string().optional().describe("Recurrence rule: 'daily', 'weekly', 'monthly', 'yearly', or null"),
+        recurrence: z.string().optional().describe(
+          'Recurrence rule in RRULE format (RFC 5545). Examples: '
+          + '"FREQ=DAILY" (every day), '
+          + '"FREQ=HOURLY;INTERVAL=3" (every 3 hours), '
+          + '"FREQ=WEEKLY;BYDAY=MO,WE,FR" (Mon/Wed/Fri), '
+          + '"FREQ=MONTHLY;BYDAY=1MO" (first Monday of month), '
+          + '"FREQ=DAILY;COUNT=10" (10 times then stop), '
+          + '"FREQ=DAILY;UNTIL=20261231T235959Z" (until Dec 31 2026). '
+          + 'Legacy values "daily", "weekly", "monthly", "yearly" also accepted.',
+        ),
         action: z.string().optional().describe('AI instruction for the bot to execute on schedule'),
       }),
       execute: async (args) => {

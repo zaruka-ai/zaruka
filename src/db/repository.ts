@@ -1,26 +1,68 @@
+import rrule from 'rrule';
 import type Database from 'better-sqlite3';
 import type { Task } from '../core/types.js';
 
-function computeNextDate(dueDate: string, recurrence: string): string {
-  const date = new Date(dueDate + 'T00:00:00');
-  switch (recurrence) {
-    case 'daily':
-      date.setDate(date.getDate() + 1);
-      break;
-    case 'weekly':
-      date.setDate(date.getDate() + 7);
-      break;
-    case 'monthly':
-      date.setMonth(date.getMonth() + 1);
-      break;
-    case 'yearly':
-      date.setFullYear(date.getFullYear() + 1);
-      break;
-    default:
-      // Unknown recurrence — advance by 1 day as fallback
-      date.setDate(date.getDate() + 1);
-  }
-  return date.toISOString().split('T')[0];
+const { RRule } = rrule;
+
+/** Map legacy keyword values to RRULE strings for backward compatibility. */
+const LEGACY_MAP: Record<string, string> = {
+  daily: 'FREQ=DAILY',
+  weekly: 'FREQ=WEEKLY',
+  monthly: 'FREQ=MONTHLY',
+  yearly: 'FREQ=YEARLY',
+};
+
+export function normalizeRecurrence(rec: string): string {
+  return LEGACY_MAP[rec] ?? rec;
+}
+
+/** Convert a local date+time pair into a "fake UTC" Date for rrule math. */
+function localToFakeUtc(dateStr: string, timeStr: string): Date {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const [h, min] = timeStr.split(':').map(Number);
+  return new Date(Date.UTC(y, m - 1, d, h, min, 0));
+}
+
+/** Get the current time in a timezone as a "fake UTC" Date for rrule comparison. */
+function nowAsFakeUtc(timezone: string): Date {
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  }).formatToParts(now);
+  const get = (type: string) => parts.find(p => p.type === type)!.value;
+  return new Date(Date.UTC(
+    +get('year'), +get('month') - 1, +get('day'),
+    +get('hour'), +get('minute'), +get('second'),
+  ));
+}
+
+function computeNextOccurrence(
+  recurrence: string,
+  dueDate: string,
+  dueTime: string,
+  timezone: string,
+): { date: string; time: string } | null {
+  const normalized = normalizeRecurrence(recurrence);
+  const dtstart = localToFakeUtc(dueDate, dueTime);
+
+  const rule = new RRule({
+    ...RRule.parseString(normalized),
+    dtstart,
+  });
+
+  const now = nowAsFakeUtc(timezone);
+  const next = rule.after(now);
+  if (!next) return null; // COUNT/UNTIL exhausted
+
+  const yyyy = next.getUTCFullYear();
+  const mm = String(next.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(next.getUTCDate()).padStart(2, '0');
+  const hh = String(next.getUTCHours()).padStart(2, '0');
+  const min = String(next.getUTCMinutes()).padStart(2, '0');
+
+  return { date: `${yyyy}-${mm}-${dd}`, time: `${hh}:${min}` };
 }
 
 export class TaskRepository {
@@ -127,15 +169,21 @@ export class TaskRepository {
     `).all({ today, currentTime }) as Task[];
   }
 
-  /** Advance a recurring task to the next occurrence date. */
-  advanceRecurrence(id: number): void {
+  /** Advance a recurring task to the next occurrence, or complete it if exhausted. */
+  advanceRecurrence(id: number, timezone: string): void {
     const task = this.getById(id);
     if (!task || !task.recurrence || !task.due_date) return;
-    const nextDate = computeNextDate(task.due_date, task.recurrence);
-    this.db.prepare(`
-      UPDATE tasks SET due_date = @nextDate, updated_at = datetime('now')
-      WHERE id = @id
-    `).run({ id, nextDate });
+
+    const next = computeNextOccurrence(task.recurrence, task.due_date, task.due_time, timezone);
+    if (next) {
+      this.db.prepare(`
+        UPDATE tasks SET due_date = @date, due_time = @time, updated_at = datetime('now')
+        WHERE id = @id
+      `).run({ id, date: next.date, time: next.time });
+    } else {
+      // COUNT or UNTIL exhausted — auto-complete
+      this.complete(id);
+    }
   }
 
   /** Find an active task whose title matches (case-insensitive substring). */

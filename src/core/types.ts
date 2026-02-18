@@ -6,7 +6,7 @@ export interface Task {
   description: string | null;
   due_date: string | null;
   due_time: string;               // HH:MM, default '12:00'
-  recurrence: string | null;      // null | 'daily' | 'weekly' | 'monthly' | 'yearly' | cron
+  recurrence: string | null;      // null | RRULE string (e.g. 'FREQ=DAILY', 'FREQ=HOURLY;INTERVAL=3')
   action: string | null;          // AI instruction (null = simple reminder)
   status: 'active' | 'completed' | 'deleted' | 'paused';
   source: string;

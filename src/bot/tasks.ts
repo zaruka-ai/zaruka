@@ -1,8 +1,11 @@
+import rrule from 'rrule';
 import { Markup, type Telegraf } from 'telegraf';
 import type { Task } from '../core/types.js';
 import type { BotContext } from './bot-context.js';
 import { t } from './i18n.js';
+import { normalizeRecurrence } from '../db/repository.js';
 
+const { RRule } = rrule;
 const PAGE_SIZE = 5;
 
 type Filter = 'active' | 'completed' | 'all';
@@ -22,6 +25,16 @@ function formatDate(dateStr: string): string {
 function formatDateFull(dateStr: string): string {
   const [yyyy, mm, dd] = dateStr.split('-');
   return `${dd}.${mm}.${yyyy}`;
+}
+
+function recurrenceToText(recurrence: string): string {
+  try {
+    const normalized = normalizeRecurrence(recurrence);
+    const rule = new RRule({ ...RRule.parseString(normalized), dtstart: new Date() });
+    return rule.toText();
+  } catch {
+    return recurrence;
+  }
 }
 
 // --- List view ---
@@ -99,7 +112,7 @@ export function taskDetailText(task: Task): string {
     if (task.due_time && task.due_time !== '12:00') datePart += ` ⏰ ${task.due_time}`;
     meta.push(datePart);
   }
-  if (task.recurrence) meta.push(`🔁 ${task.recurrence}`);
+  if (task.recurrence) meta.push(`🔁 ${recurrenceToText(task.recurrence)}`);
   if (task.action) meta.push('🤖 action');
   if (meta.length > 0) lines.push(meta.join('\n'));
   return lines.join('\n');

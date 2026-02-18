@@ -64,7 +64,7 @@ export class Scheduler {
 
       // Advance recurring tasks or complete one-time tasks
       if (task.recurrence) {
-        this.repo.advanceRecurrence(task.id);
+        this.repo.advanceRecurrence(task.id, this.timezone);
       } else {
         this.repo.complete(task.id);
       }

@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import type { Task } from '../core/types.js';
+export declare function normalizeRecurrence(rec: string): string;
 export declare class TaskRepository {
     private db;
     constructor(db: Database.Database);
@@ -22,8 +23,8 @@ export declare class TaskRepository {
     delete(id: number): boolean;
     /** Return active tasks whose date+time has arrived in the given timezone. */
     getDueNow(timezone: string): Task[];
-    /** Advance a recurring task to the next occurrence date. */
-    advanceRecurrence(id: number): void;
+    /** Advance a recurring task to the next occurrence, or complete it if exhausted. */
+    advanceRecurrence(id: number, timezone: string): void;
     /** Find an active task whose title matches (case-insensitive substring). */
     findActiveByTitle(substring: string): Task | undefined;
     count(status?: string): number;

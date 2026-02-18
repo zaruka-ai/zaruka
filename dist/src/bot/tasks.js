@@ -1,5 +1,8 @@
+import rrule from 'rrule';
 import { Markup } from 'telegraf';
 import { t } from './i18n.js';
+import { normalizeRecurrence } from '../db/repository.js';
+const { RRule } = rrule;
 const PAGE_SIZE = 5;
 function statusIcon(task) {
     if (task.status === 'completed')
@@ -17,6 +20,16 @@ function formatDate(dateStr) {
 function formatDateFull(dateStr) {
     const [yyyy, mm, dd] = dateStr.split('-');
     return `${dd}.${mm}.${yyyy}`;
+}
+function recurrenceToText(recurrence) {
+    try {
+        const normalized = normalizeRecurrence(recurrence);
+        const rule = new RRule({ ...RRule.parseString(normalized), dtstart: new Date() });
+        return rule.toText();
+    }
+    catch {
+        return recurrence;
+    }
 }
 // --- List view ---
 function taskButtonLabel(task) {
@@ -87,7 +100,7 @@ export function taskDetailText(task) {
         meta.push(datePart);
     }
     if (task.recurrence)
-        meta.push(`🔁 ${task.recurrence}`);
+        meta.push(`🔁 ${recurrenceToText(task.recurrence)}`);
     if (task.action)
         meta.push('🤖 action');
     if (meta.length > 0)
