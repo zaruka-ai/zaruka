@@ -127,7 +127,7 @@ const evolvingSkills = new Set<string>();
 /** Create the evolve_skill tool with Vercel AI SDK inner agent. */
 export function createEvolveTool(skillsDir: string, aiConfig: AiConfig): Tool {
   return tool({
-    description: 'SELF-EVOLUTION: Create a new skill that integrates an external API or automates a task. Call this when the user needs a capability that requires an external service (e.g. currency conversion, stock data, weather from a specific provider). DO NOT call this for capabilities that should be native to the AI model (image generation, audio, video) — for those, tell the user to switch models via /settings instead. The new skill will be available on the next message.',
+    description: 'SELF-EVOLUTION: Create a new skill that integrates an external API or automates a task. Call this when the user needs a capability that requires an external service (e.g. currency conversion, stock data, weather, image generation via Leonardo/Stability AI, etc.). The new skill will be available on the next message.',
     inputSchema: z.object({
       skill_name: z.string().describe('Short snake_case name for the skill (e.g. "currency_converter", "translator")'),
       description: z.string().describe('Detailed description of what the skill should do, including expected inputs and outputs'),
@@ -141,20 +141,6 @@ export function createEvolveTool(skillsDir: string, aiConfig: AiConfig): Tool {
           message: `Skill "${args.skill_name}" is already being created. Wait for it to finish, then use execute_dynamic_skill to call it.`,
         });
       }
-      // Reject skills for native model capabilities — enforce in code, not just prompts
-      const nativeKeywords = /\b(image.generat|generat.*image|dall.?e|midjourney|stable.diffusion|text.to.image|text.to.speech|text.to.video|text.to.audio|speech.synth|voice.generat|video.generat|audio.generat|tts\b|stt\b)/i;
-      const combined = `${args.skill_name} ${args.description}`;
-      if (nativeKeywords.test(combined)) {
-        console.log(`evolve_skill: rejected "${args.skill_name}" — native model capability`);
-        return JSON.stringify({
-          success: false,
-          error: 'native_capability',
-          message: 'This capability (image/audio/video generation) should be handled natively by the AI model, not via a third-party skill. '
-            + 'Tell the user that the current model does not support this and suggest switching to a model that does (e.g. GPT-4o, Gemini) via /settings. '
-            + 'As an alternative, offer several third-party services with pricing comparison and let the user choose.',
-        });
-      }
-
       evolvingSkills.add(args.skill_name);
       try {
       if (!existsSync(skillsDir)) {
