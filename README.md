@@ -103,4 +103,4 @@ All data stays on your machine. The only external calls are to the LLM provider 
 
 ## License
 
-MIT
+AGPL-3.0
