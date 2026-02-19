@@ -166,6 +166,23 @@ export class ConfigManager {
     }
   }
 
+  updateSavedProviderToken(provider: string, authToken: string, refreshToken?: string, expiresAt?: string, baseUrl?: string): void {
+    const saved = this.config.savedProviders?.[provider];
+    if (!saved) return;
+    saved.authToken = authToken;
+    if (refreshToken !== undefined) saved.refreshToken = refreshToken;
+    if (expiresAt !== undefined) saved.tokenExpiresAt = expiresAt;
+    if (baseUrl !== undefined) saved.baseUrl = baseUrl;
+    // Also update active provider if it matches
+    if (this.config.ai?.provider === provider) {
+      this.config.ai.authToken = authToken;
+      if (refreshToken !== undefined) this.config.ai.refreshToken = refreshToken;
+      if (expiresAt !== undefined) this.config.ai.tokenExpiresAt = expiresAt;
+      if (baseUrl !== undefined) this.config.ai.baseUrl = baseUrl;
+    }
+    this.save();
+  }
+
   isTokenExpiringSoon(bufferMs = 300_000): boolean {
     const expiresAt = this.config.ai?.tokenExpiresAt;
     // No expiry recorded but we have a refresh token — always refresh to be safe

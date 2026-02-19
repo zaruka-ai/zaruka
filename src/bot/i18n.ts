@@ -27,6 +27,8 @@ export const UI_STRINGS = {
   'settings.loading_models': 'Loading models...',
   'settings.switched': '✓ Switched to {provider}, model: {model}',
   'settings.model_changed': '✓ Model changed to {model}',
+  'settings.auth_expired': 'Authorization may have expired. Please re-authenticate.',
+  'settings.reauth_btn': '🔑 Re-authenticate',
 
   // Settings — language
   'settings.lang_prompt': 'Current language: {lang}\n\nChoose:',

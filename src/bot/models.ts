@@ -137,7 +137,11 @@ export async function fetchAvailableModels(ai: NonNullable<ZarukaConfig['ai']>):
 
 async function fetchAnthropicModels(ai: NonNullable<ZarukaConfig['ai']>): Promise<ModelOption[]> {
   const key = ai.apiKey || ai.authToken;
-  if (!key) return [];
+  if (!key) {
+    console.error('[Models] Anthropic: no API key or auth token configured');
+    return [];
+  }
+  const authMethod = ai.authToken ? 'OAuth' : 'API key';
   try {
     const headers: Record<string, string> = {
       'anthropic-version': '2023-06-01',
@@ -152,10 +156,15 @@ async function fetchAnthropicModels(ai: NonNullable<ZarukaConfig['ai']>): Promis
       headers,
       signal: AbortSignal.timeout(10000),
     });
-    if (!resp.ok) return [];
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => '');
+      console.error(`[Models] Anthropic (${authMethod}): HTTP ${resp.status} — ${body}`);
+      return [];
+    }
     const data = await resp.json() as { data: { id: string; display_name: string }[] };
     return data.data.map((m) => ({ id: m.id, label: m.display_name }));
-  } catch {
+  } catch (err) {
+    console.error(`[Models] Anthropic (${authMethod}):`, err instanceof Error ? err.message : err);
     return [];
   }
 }
@@ -167,7 +176,11 @@ async function fetchGoogleModels(ai: NonNullable<ZarukaConfig['ai']>): Promise<M
     const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${key}`, {
       signal: AbortSignal.timeout(10000),
     });
-    if (!resp.ok) return [];
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => '');
+      console.error(`[Models] Google: HTTP ${resp.status} — ${body}`);
+      return [];
+    }
     const data = await resp.json() as { models: { name: string; displayName: string; supportedGenerationMethods?: string[] }[] };
     return data.models
       .filter((m) => m.supportedGenerationMethods?.includes('generateContent'))
@@ -176,7 +189,8 @@ async function fetchGoogleModels(ai: NonNullable<ZarukaConfig['ai']>): Promise<M
         id: m.name.replace('models/', ''),
         label: m.displayName,
       }));
-  } catch {
+  } catch (err) {
+    console.error('[Models] Google:', err instanceof Error ? err.message : err);
     return [];
   }
 }
@@ -190,14 +204,19 @@ async function fetchChatGPTModels(ai: NonNullable<ZarukaConfig['ai']>): Promise<
       },
       signal: AbortSignal.timeout(10000),
     });
-    if (!resp.ok) return [];
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => '');
+      console.error(`[Models] ChatGPT (OAuth): HTTP ${resp.status} — ${body}`);
+      return [];
+    }
     const data = await resp.json() as {
       models: { slug: string; display_name: string; visibility?: string }[];
     };
     return data.models
       .filter((m) => m.visibility === 'list')
       .map((m) => ({ id: m.slug, label: m.display_name }));
-  } catch {
+  } catch (err) {
+    console.error('[Models] ChatGPT:', err instanceof Error ? err.message : err);
     return [];
   }
 }

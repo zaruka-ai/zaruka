@@ -6,6 +6,7 @@ import { fetchAvailableModels, clearModelsCache } from './models.js';
 import { settingsProviderKeyboard, PROVIDER_LABELS } from './providers.js';
 import { showModelList } from './model-keyboard.js';
 import { languageKeyboardRows, languageDisplayName } from './utils.js';
+import { forceTokenRefresh } from '../auth/token-refresh.js';
 import { t } from './i18n.js';
 
 /** Per-chat: which provider the user is currently browsing models for. */
@@ -55,27 +56,54 @@ function resourcesKeyboard(configManager: ConfigManager) {
   ]);
 }
 
+const MODEL_LIST_OPTS = {
+  modelPrefix: 'model:',
+  showAllAction: 'models_all',
+  backAction: 'settings:model',
+} as const;
+
 /** Build model list keyboard for a given provider config. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function showModelsForProvider(tCtx: any, provider: AiProvider, configManager: ConfigManager) {
   const saved = configManager.getSavedProvider(provider);
   const current = configManager.getConfig().ai;
-  const ai = provider === current?.provider ? current : saved;
+  let ai = provider === current?.provider ? current : saved;
 
   if (!ai) return; // shouldn't happen — caller checks
 
   await tCtx.editMessageText(`${PROVIDER_LABELS[provider]}\n\n${t(configManager, 'settings.loading_models')}`);
 
-  const found = await showModelList(tCtx, ai, configManager, {
-    modelPrefix: 'model:',
-    showAllAction: 'models_all',
-    backAction: 'settings:model',
-  });
+  let found = await showModelList(tCtx, ai, configManager, MODEL_LIST_OPTS);
+
+  // If fetch failed and this provider uses OAuth, try refreshing the token and retrying
+  if (!found && ai.authToken) {
+    console.log(`[Settings] Model fetch failed for ${provider}, attempting token refresh...`);
+    const refreshed = await forceTokenRefresh(configManager, provider);
+    if (refreshed) {
+      // Re-read config — token was updated
+      const refreshedCurrent = configManager.getConfig().ai;
+      ai = provider === refreshedCurrent?.provider ? refreshedCurrent : configManager.getSavedProvider(provider);
+      if (ai) {
+        found = await showModelList(tCtx, ai, configManager, MODEL_LIST_OPTS);
+      }
+    }
+  }
 
   if (!found) {
+    const isOAuth = !!ai?.authToken;
+    const buttons = [];
+    if (isOAuth) {
+      buttons.push([Markup.button.callback(t(configManager, 'settings.reauth_btn') || 'Re-authenticate', `settings:reauth:${provider}`)]);
+    }
+    buttons.push([Markup.button.callback(t(configManager, 'settings.back'), 'settings:model')]);
+
+    const message = isOAuth
+      ? t(configManager, 'settings.auth_expired') || 'Authorization may have expired. Please re-authenticate.'
+      : 'Could not fetch models.';
+
     await tCtx.editMessageText(
-      `${PROVIDER_LABELS[provider]}\n\nCould not fetch models.`,
-      Markup.inlineKeyboard([[Markup.button.callback(t(configManager, 'settings.back'), 'settings:model')]]),
+      `${PROVIDER_LABELS[provider]}\n\n${message}`,
+      Markup.inlineKeyboard(buttons),
     );
   }
 }
@@ -108,6 +136,15 @@ export function registerSettingsCallbacks(bot: Telegraf, ctx: BotContext): void 
       clearModelsCache();
       await onboarding.handleProviderSelected(tCtx, provider);
     }
+  });
+
+  // Re-authenticate a provider whose token expired
+  bot.action(/^settings:reauth:(.+)$/, async (tCtx) => {
+    await tCtx.answerCbQuery();
+    const provider = tCtx.match[1] as AiProvider;
+    onboarding.state = { step: 'provider', provider, skipProfile: true };
+    clearModelsCache();
+    await onboarding.handleProviderSelected(tCtx, provider);
   });
 
   // Show all models for the browsing provider
