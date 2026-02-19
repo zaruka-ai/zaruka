@@ -48,10 +48,10 @@ export class TelegramBot {
           if (!this.assistant) return;
           try {
             await tCtx.sendChatAction('typing');
-            const response = await this.assistant.process('👋');
-            if (response) {
-              const formatted = response.replace(/^#{1,6}\s+(.+)$/gm, '<b>$1</b>');
-              await tCtx.reply(formatted, { parse_mode: 'HTML' }).catch(() => tCtx.reply(response));
+            const result = await this.assistant.process('\ud83d\udc4b');
+            if (result.text) {
+              const formatted = result.text.replace(/^#{1,6}\s+(.+)$/gm, '<b>$1</b>');
+              await tCtx.reply(formatted, { parse_mode: 'HTML' }).catch(() => tCtx.reply(result.text));
             }
           } catch (err) {
             console.error('AI greeting failed:', err);
@@ -174,6 +174,12 @@ export class TelegramBot {
       if (await this.staleGuard(ctx)) return;
       await ctx.answerCbQuery();
       await this.onboarding.handleBackToProvider(ctx);
+    });
+
+    this.bot.action(/^onboard_switch:(.+)$/, async (ctx) => {
+      if (await this.staleGuard(ctx)) return;
+      await ctx.answerCbQuery();
+      await this.onboarding.handleSwitchProvider(ctx, ctx.match[1] as AiProvider);
     });
 
     this.bot.action('onboard:retry', async (ctx) => {

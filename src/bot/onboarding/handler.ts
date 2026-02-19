@@ -5,7 +5,7 @@ import { providerKeyboard } from '../providers.js';
 import { clearModelsCache } from '../models.js';
 import { languageKeyboardRows } from '../utils.js';
 import { handleProviderSelected, handleAuthMethod, handleApiKeyInput } from './auth.js';
-import { handleShowAllModels } from './model.js';
+import { sendModelSelection, handleShowAllModels } from './model.js';
 import { finishOnboarding } from './profile.js';
 
 export type OnboardingStep = 'ask_language' | 'provider' | 'auth_method' | 'api_key' | 'base_url' | 'model' | 'testing';
@@ -100,6 +100,26 @@ export class OnboardingHandler {
     await handleShowAllModels(this, ctx);
   }
 
+  async handleSwitchProvider(ctx: Ctx, provider: AiProvider): Promise<void> {
+    const saved = this.deps.configManager.getSavedProvider(provider);
+    if (!saved) return;
+
+    this.state = {
+      step: 'model',
+      provider: saved.provider,
+      apiKey: saved.apiKey || saved.authToken,
+      isOAuth: !!saved.authToken,
+      refreshToken: saved.refreshToken,
+      tokenExpiresIn: saved.tokenExpiresAt
+        ? Math.floor((new Date(saved.tokenExpiresAt).getTime() - Date.now()) / 1000)
+        : undefined,
+      baseUrl: saved.baseUrl ?? undefined,
+    };
+
+    clearModelsCache();
+    await sendModelSelection(this, ctx);
+  }
+
   async handleBackToProvider(ctx: Ctx): Promise<void> {
     this.state = { step: 'provider' };
     clearModelsCache();
@@ -136,10 +156,7 @@ export class OnboardingHandler {
         await handleApiKeyInput(this, ctx, text.trim());
         break;
       case 'model':
-        state.model = text.trim();
-        state.step = 'testing';
-        await ctx.reply('Testing connection...');
-        await finishOnboarding(this, ctx);
+        await ctx.reply('Please choose a model using the buttons above.');
         break;
       default:
         break;

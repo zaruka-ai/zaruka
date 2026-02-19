@@ -142,9 +142,11 @@ function buildSystemPrompt(
     '- Do NOT use # or ## or ### for headers — Telegram does not support them. Use *bold text* instead.',
     '- Bot commands like /settings must be plain text, never in backticks — Telegram makes them clickable automatically.',
     '',
-    'CRITICAL: You CANNOT generate images, audio, or video. You are a TEXT-ONLY model.',
+    'MEDIA CAPABILITIES:',
+    '- You CAN analyze images and documents (PDFs) that users send you. Describe, summarize, answer questions about them.',
+    '- You CANNOT generate images, audio, or video natively.',
     'When asked about image/audio/video generation:',
-    '1. Say the current model does not support this natively.',
+    '1. Say the current model does not support generation natively.',
     '2. Suggest switching provider via /settings. Mention:',
     '   - OpenAI: ChatGPT Plus/Pro subscribers already have image generation (DALL-E) at no extra cost. API users pay per image.',
     '   - Google: Gemini supports image generation via Imagen.',
@@ -462,7 +464,7 @@ export async function runStart(): Promise<void> {
   // AI executor for scheduled action tasks
   const executeAction = async (instruction: string): Promise<string> => {
     if (!assistant) return 'AI not configured';
-    return assistant.process(instruction);
+    return (await assistant.process(instruction)).text;
   };
 
   // Set up scheduler for reminders + resource monitoring + action tasks

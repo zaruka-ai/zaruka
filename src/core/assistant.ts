@@ -13,9 +13,25 @@ const MAX_CONTEXT_TOKENS = 180_000;
 /** Reserve tokens for the model's response. */
 const RESPONSE_RESERVE = 8_000;
 
+export interface Attachment {
+  type: 'image' | 'file';
+  data: Buffer;
+  mediaType: string;
+  fileName?: string;
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant';
   text: string;
+  fileType?: string | null;
+  mimeType?: string | null;
+  fileName?: string | null;
+}
+
+export interface ProcessResult {
+  text: string;
+  /** Set when the primary provider failed and a fallback succeeded. */
+  switchedTo?: AiConfig;
 }
 
 export interface UsageCallback {
@@ -69,16 +85,17 @@ export class Assistant {
     this.fallbackConfigs = opts.fallbackConfigs ?? [];
   }
 
-  async process(userMessage: string, history?: ChatMessage[]): Promise<string> {
-    const messages = this.buildMessages(userMessage, history);
+  async process(userMessage: string, history?: ChatMessage[], attachments?: Attachment[]): Promise<ProcessResult> {
+    const messages = this.buildMessages(userMessage, history, attachments);
 
     // Try primary model first, then fallbacks on retriable errors
     let lastError: unknown;
-    const attempts: Array<{ model: LanguageModel; label: string }> = [
+    const attempts: Array<{ model: LanguageModel; label: string; config?: AiConfig }> = [
       { model: this.model, label: 'primary' },
       ...this.fallbackConfigs.map((cfg) => ({
         model: createModel(cfg),
         label: `${cfg.provider}/${cfg.model}`,
+        config: cfg,
       })),
     ];
 
@@ -100,7 +117,7 @@ export class Assistant {
           });
         }
 
-        return text;
+        return { text, switchedTo: attempt.config };
       } catch (err) {
         lastError = err;
         if (!isRetriableForFailover(err) || attempt === attempts[attempts.length - 1]) {
@@ -119,15 +136,17 @@ export class Assistant {
     userMessage: string,
     history: ChatMessage[] | undefined,
     callbacks: StreamCallbacks,
-  ): Promise<string> {
-    const messages = this.buildMessages(userMessage, history);
+    attachments?: Attachment[],
+  ): Promise<ProcessResult> {
+    const messages = this.buildMessages(userMessage, history, attachments);
 
     let lastError: unknown;
-    const attempts: Array<{ model: LanguageModel; label: string }> = [
+    const attempts: Array<{ model: LanguageModel; label: string; config?: AiConfig }> = [
       { model: this.model, label: 'primary' },
       ...this.fallbackConfigs.map((cfg) => ({
         model: createModel(cfg),
         label: `${cfg.provider}/${cfg.model}`,
+        config: cfg,
       })),
     ];
 
@@ -150,7 +169,7 @@ export class Assistant {
           });
         }
 
-        return text;
+        return { text, switchedTo: attempt.config };
       } catch (err) {
         lastError = err;
         if (!isRetriableForFailover(err) || attempt === attempts[attempts.length - 1]) {
@@ -164,15 +183,19 @@ export class Assistant {
     throw lastError;
   }
 
-  private buildMessages(userMessage: string, history?: ChatMessage[]): ModelMessage[] {
+  private buildMessages(userMessage: string, history?: ChatMessage[], attachments?: Attachment[]): ModelMessage[] {
     // Estimate fixed overhead: system prompt + tool definitions
     const systemTokens = estimateTokens(this.systemPrompt);
     const toolsTokens = estimateTokens(JSON.stringify(Object.keys(this.tools)));
     // Each tool definition adds description + schema; rough estimate
     const toolDefTokens = Object.keys(this.tools).length * 200;
 
+    const attachmentTokens = attachments
+      ? attachments.reduce((sum, a) => sum + (a.type === 'image' ? 1500 : Math.ceil(a.data.length / 4)), 0)
+      : 0;
+
     const fixedTokens = systemTokens + toolsTokens + toolDefTokens + RESPONSE_RESERVE;
-    const userMsgTokens = estimateTokens(userMessage);
+    const userMsgTokens = estimateTokens(userMessage) + attachmentTokens;
     let budget = MAX_CONTEXT_TOKENS - fixedTokens - userMsgTokens;
 
     const messages: ModelMessage[] = [];
@@ -182,7 +205,15 @@ export class Assistant {
       const fitting: ModelMessage[] = [];
       for (let i = history.length - 1; i >= 0; i--) {
         const m = history[i];
-        const truncated = m.text.length > 1000 ? m.text.slice(0, 1000) + '...' : m.text;
+        // For history messages with attachments, prepend metadata text
+        let text = m.text;
+        if (m.fileType) {
+          const label = m.fileType === 'photo'
+            ? '[Attached: photo]'
+            : `[Attached: ${m.fileName || 'document'}]`;
+          text = `${label}\n${text}`;
+        }
+        const truncated = text.length > 1000 ? text.slice(0, 1000) + '...' : text;
         const tokens = estimateTokens(truncated);
         if (tokens > budget) break;
         budget -= tokens;
@@ -193,7 +224,25 @@ export class Assistant {
       messages.push(...fitting);
     }
 
-    messages.push({ role: 'user', content: userMessage });
+    // Build current user message — multimodal if attachments present
+    if (attachments && attachments.length > 0) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const parts: any[] = [];
+      for (const attachment of attachments) {
+        if (attachment.type === 'image') {
+          parts.push({ type: 'image', image: attachment.data, mimeType: attachment.mediaType });
+        } else {
+          parts.push({ type: 'file', data: attachment.data, mimeType: attachment.mediaType, filename: attachment.fileName });
+        }
+      }
+      if (userMessage) {
+        parts.push({ type: 'text', text: userMessage });
+      }
+      messages.push({ role: 'user', content: parts });
+    } else {
+      messages.push({ role: 'user', content: userMessage });
+    }
+
     return messages;
   }
 }

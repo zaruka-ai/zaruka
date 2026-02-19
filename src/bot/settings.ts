@@ -4,6 +4,7 @@ import type { AiProvider } from '../core/types.js';
 import type { BotContext } from './bot-context.js';
 import { fetchAvailableModels, clearModelsCache } from './models.js';
 import { settingsProviderKeyboard, PROVIDER_LABELS } from './providers.js';
+import { showModelList } from './model-keyboard.js';
 import { languageKeyboardRows, languageDisplayName } from './utils.js';
 import { t } from './i18n.js';
 
@@ -65,26 +66,18 @@ async function showModelsForProvider(tCtx: any, provider: AiProvider, configMana
 
   await tCtx.editMessageText(`${PROVIDER_LABELS[provider]}\n\n${t(configManager, 'settings.loading_models')}`);
 
-  clearModelsCache();
-  const { popular, all } = await fetchAvailableModels(ai);
-  const models = popular.length > 0 ? popular : all;
-  const currentModel = configManager.getModel();
-  const modelButtons = models.map((m) => {
-    const check = m.id === currentModel && provider === current?.provider ? ' ✓' : '';
-    return [Markup.button.callback(`${m.label}${check}`, `model:${m.id}`)];
+  const found = await showModelList(tCtx, ai, configManager, {
+    modelPrefix: 'model:',
+    showAllAction: 'models_all',
+    backAction: 'settings:model',
   });
 
-  if (popular.length > 0 && all.length > popular.length) {
-    modelButtons.push([Markup.button.callback(t(configManager, 'settings.show_all'), 'models_all')]);
+  if (!found) {
+    await tCtx.editMessageText(
+      `${PROVIDER_LABELS[provider]}\n\nCould not fetch models.`,
+      Markup.inlineKeyboard([[Markup.button.callback(t(configManager, 'settings.back'), 'settings:model')]]),
+    );
   }
-
-  await tCtx.editMessageText(
-    `${PROVIDER_LABELS[provider]}\n\n${t(configManager, 'settings.choose_model')}`,
-    Markup.inlineKeyboard([
-      ...modelButtons,
-      [Markup.button.callback(t(configManager, 'settings.back'), 'settings:model')],
-    ]),
-  );
 }
 
 export function registerSettingsCallbacks(bot: Telegraf, ctx: BotContext): void {

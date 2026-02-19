@@ -1,10 +1,15 @@
 import type { Telegraf } from 'telegraf';
-import type { ChatMessage } from '../core/assistant.js';
+import type { ChatMessage, Attachment } from '../core/assistant.js';
+import type { AttachmentMeta } from '../db/message-repository.js';
 import type { BotContext } from './bot-context.js';
 import { Markup } from 'telegraf';
-import { buildRateLimitMessage } from './providers.js';
+import { buildRateLimitMessage, PROVIDER_LABELS } from './providers.js';
+import type { AiProvider } from '../core/types.js';
 import { closeUnclosedCodeFences, detectLanguage, splitMessage } from './utils.js';
 import { t } from './i18n.js';
+
+/** Max file size for Telegram bot API downloads (20 MB). */
+const MAX_FILE_SIZE = 20 * 1024 * 1024;
 
 /** Escape HTML special characters. */
 function escapeHtml(text: string): string {
@@ -98,6 +103,26 @@ export function registerHandlers(bot: Telegraf, ctx: BotContext): void {
     );
   });
 
+  bot.on('photo', (tCtx) => {
+    if (isDuplicate(tCtx.chat.id, tCtx.message.message_id)) return;
+    ctx.captureChatId(tCtx.chat.id);
+    if (!ctx.getAssistant()) {
+      tCtx.reply(t(ctx.configManager, 'error.no_ai')).catch(() => {});
+      return;
+    }
+    handlePhoto(tCtx, ctx).catch((err) => console.error('Photo handler error:', err));
+  });
+
+  bot.on('document', (tCtx) => {
+    if (isDuplicate(tCtx.chat.id, tCtx.message.message_id)) return;
+    ctx.captureChatId(tCtx.chat.id);
+    if (!ctx.getAssistant()) {
+      tCtx.reply(t(ctx.configManager, 'error.no_ai')).catch(() => {});
+      return;
+    }
+    handleDocument(tCtx, ctx).catch((err) => console.error('Document handler error:', err));
+  });
+
   bot.on('voice', (tCtx) => {
     if (isDuplicate(tCtx.chat.id, tCtx.message.message_id)) return;
     ctx.captureChatId(tCtx.chat.id);
@@ -147,6 +172,99 @@ export function registerHandlers(bot: Telegraf, ctx: BotContext): void {
     const lang = detected || ctx.lastLanguage.get(chatId);
     processAndReply(tCtx, message, ctx, lang).catch((err) => console.error('Text handler error:', err));
   });
+}
+
+/** Download a file from Telegram by file_id and return the Buffer. */
+async function downloadTelegramFile(tCtx: { telegram: { getFileLink(fileId: string): Promise<URL> } }, fileId: string): Promise<Buffer> {
+  const fileLink = await tCtx.telegram.getFileLink(fileId);
+  const resp = await fetch(fileLink.href);
+  if (!resp.ok) throw new Error(`Failed to download file: ${resp.status}`);
+  return Buffer.from(await resp.arrayBuffer());
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function handlePhoto(tCtx: any, ctx: BotContext): Promise<void> {
+  const chatId: number = tCtx.chat.id;
+  const photos = tCtx.message.photo;
+  // Telegram sends an array of PhotoSize — last element is the largest resolution
+  const photo = photos[photos.length - 1];
+  const caption: string = tCtx.message.caption || '';
+
+  const detected = detectLanguage(caption);
+  if (detected) ctx.lastLanguage.set(chatId, detected);
+  const lang = detected || ctx.lastLanguage.get(chatId);
+
+  let message = caption || '[The user sent a photo without a caption. Describe what you see.]';
+  if (!detected && ctx.lastLanguage.has(chatId)) {
+    message = `[Continue in ${ctx.lastLanguage.get(chatId)}]\n${message}`;
+  }
+
+  try {
+    await tCtx.sendChatAction('typing');
+    const data = await downloadTelegramFile(tCtx, photo.file_id);
+    const attachment: Attachment = { type: 'image', data, mediaType: 'image/jpeg' };
+    const attachmentMeta: AttachmentMeta = { fileId: photo.file_id, fileType: 'photo', mimeType: 'image/jpeg' };
+    await processAndReply(tCtx, message, ctx, lang, { attachments: [attachment], attachmentMeta, skipUserSave: false });
+  } catch (err) {
+    console.error('Error processing photo:', err);
+    // Fallback: send as text-only with metadata
+    await processAndReply(tCtx, `[The user sent a photo but it could not be downloaded. Error: ${err instanceof Error ? err.message : String(err)}]\n${caption}`, ctx, lang);
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function handleDocument(tCtx: any, ctx: BotContext): Promise<void> {
+  const chatId: number = tCtx.chat.id;
+  const doc = tCtx.message.document;
+  const caption: string = tCtx.message.caption || '';
+  const mimeType: string = doc.mime_type || 'application/octet-stream';
+  const fileName: string = doc.file_name || 'document';
+  const fileSize: number = doc.file_size || 0;
+
+  const detected = detectLanguage(caption);
+  if (detected) ctx.lastLanguage.set(chatId, detected);
+  const lang = detected || ctx.lastLanguage.get(chatId);
+
+  const isImage = mimeType.startsWith('image/');
+  const isPdf = mimeType === 'application/pdf';
+  const isSupported = isImage || isPdf;
+  const tooLarge = fileSize > MAX_FILE_SIZE;
+
+  // Unsupported type or too large — send metadata only
+  if (!isSupported || tooLarge) {
+    const sizeStr = fileSize > 1024 * 1024
+      ? `${(fileSize / (1024 * 1024)).toFixed(1)} MB`
+      : `${Math.round(fileSize / 1024)} KB`;
+    const reason = tooLarge ? `too large (${sizeStr}, limit is 20 MB)` : `unsupported type (${mimeType})`;
+    let message = `[The user sent a document: "${fileName}" (${mimeType}, ${sizeStr}). The file is ${reason} and was not downloaded. Acknowledge the file and respond based on the filename and any caption provided.]`;
+    if (caption) message += `\n${caption}`;
+
+    if (!detected && ctx.lastLanguage.has(chatId)) {
+      message = `[Continue in ${ctx.lastLanguage.get(chatId)}]\n${message}`;
+    }
+
+    const attachmentMeta: AttachmentMeta = { fileId: doc.file_id, fileType: 'document', mimeType, fileName };
+    await processAndReply(tCtx, message, ctx, lang, { attachmentMeta, skipUserSave: false });
+    return;
+  }
+
+  // Supported file — download and process
+  let message = caption || `[The user sent a document: "${fileName}". Analyze its contents.]`;
+  if (!detected && ctx.lastLanguage.has(chatId)) {
+    message = `[Continue in ${ctx.lastLanguage.get(chatId)}]\n${message}`;
+  }
+
+  try {
+    await tCtx.sendChatAction('typing');
+    const data = await downloadTelegramFile(tCtx, doc.file_id);
+    const attachmentType = isImage ? 'image' as const : 'file' as const;
+    const attachment: Attachment = { type: attachmentType, data, mediaType: mimeType, fileName };
+    const attachmentMeta: AttachmentMeta = { fileId: doc.file_id, fileType: 'document', mimeType, fileName };
+    await processAndReply(tCtx, message, ctx, lang, { attachments: [attachment], attachmentMeta, skipUserSave: false });
+  } catch (err) {
+    console.error('Error processing document:', err);
+    await processAndReply(tCtx, `[The user sent a document "${fileName}" (${mimeType}) but it could not be downloaded. Error: ${err instanceof Error ? err.message : String(err)}]\n${caption}`, ctx, lang);
+  }
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -262,8 +380,8 @@ function ensureWorkingPool(lang: string, ctx: BotContext): void {
     + `Generate 20 short (2-5 words each) status messages in ${lang} meaning "I'm busy working on your request, please wait". `
     + `The tone: playful, warm, varied (e.g. short phrases like "working on it…", "one moment…", "almost there…" but in ${lang}). `
     + `Each starts with one emoji. All different. One per line, no numbering, no quotes — ONLY the messages.`,
-  ).then((text) => {
-    const lines = text.split('\n').map((l) => l.trim()).filter((l) => l.length > 1 && l.length < 60);
+  ).then((result) => {
+    const lines = result.text.split('\n').map((l) => l.trim()).filter((l) => l.length > 1 && l.length < 60);
     if (lines.length >= 5) {
       workingPool.set(lang, lines);
       console.log(`Generated ${lines.length} working messages for ${lang}`);
@@ -450,20 +568,34 @@ class TelegramStreamWriter {
 /** Track how many AI calls are active per chat. */
 const activeTasks = new Map<number, number>();
 
+interface ProcessOpts {
+  attachments?: Attachment[];
+  attachmentMeta?: AttachmentMeta;
+  skipUserSave?: boolean;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function processAndReply(tCtx: any, userMessage: string, ctx: BotContext, msgLang?: string): Promise<void> {
+async function processAndReply(tCtx: any, userMessage: string, ctx: BotContext, msgLang?: string, opts?: ProcessOpts): Promise<void> {
   const chatId: number = tCtx.chat.id;
   console.log(`[chat:${chatId}] User: ${userMessage.slice(0, 100)}${userMessage.length > 100 ? '...' : ''}`);
 
-  // Save user message immediately
-  ctx.messageRepo.save(chatId, 'user', userMessage);
+  // Save user message immediately (with optional attachment metadata)
+  if (!opts?.skipUserSave) {
+    ctx.messageRepo.save(chatId, 'user', userMessage, opts?.attachmentMeta);
+  }
 
   const lang = msgLang || 'English';
   ensureWorkingPool(lang, ctx);
 
   // Build history; if another task is already running, hint AI not to repeat it
   const recentMessages = ctx.messageRepo.getRecent(chatId, 4);
-  const history: ChatMessage[] = recentMessages.map((m) => ({ role: m.role, text: m.text }));
+  const history: ChatMessage[] = recentMessages.map((m) => ({
+    role: m.role,
+    text: m.text,
+    fileType: m.file_type,
+    mimeType: m.mime_type,
+    fileName: m.file_name,
+  }));
   const busy = (activeTasks.get(chatId) ?? 0) > 0;
   const message = busy
     ? `[CONTEXT: A previous request is still being processed in the background. `
@@ -477,11 +609,14 @@ async function processAndReply(tCtx: any, userMessage: string, ctx: BotContext, 
   try {
     await writer.start(pickWorkingMessage(lang));
 
-    const response = await ctx.getAssistant()!.processStream(
+    const result = await ctx.getAssistant()!.processStream(
       message,
       history,
       { onTextDelta: (d) => writer.onDelta(d) },
+      opts?.attachments,
     );
+
+    const response = result.text;
 
     if (!response) {
       console.warn(`[chat:${chatId}] Assistant returned empty response for: ${userMessage.slice(0, 60)}`);
@@ -493,6 +628,16 @@ async function processAndReply(tCtx: any, userMessage: string, ctx: BotContext, 
       console.log(`[chat:${chatId}] Assistant: ${response.slice(0, 100)}${response.length > 100 ? '...' : ''}`);
       ctx.messageRepo.save(chatId, 'assistant', response);
       await writer.finish(response);
+
+      // Handle automatic provider failover
+      if (result.switchedTo) {
+        const oldProvider = ctx.configManager.getConfig().ai?.provider ?? 'AI';
+        const oldLabel = PROVIDER_LABELS[oldProvider as AiProvider] ?? oldProvider;
+        ctx.configManager.updateAiConfig(result.switchedTo);
+        await ctx.rebuildAssistant();
+        const newLabel = PROVIDER_LABELS[result.switchedTo.provider];
+        await tCtx.reply(`\u2139\ufe0f ${oldLabel} was unavailable. Switched to ${newLabel} (${result.switchedTo.model}).`);
+      }
     }
   } catch (err) {
     console.error('Error processing message:', err);
