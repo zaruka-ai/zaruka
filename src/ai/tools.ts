@@ -566,19 +566,24 @@ function createShellTools(): ToolSet {
 
 function createHistoryTools(messageRepo: MessageRepository, configManager: ConfigManager): ToolSet {
   return {
-    get_recent_messages: tool({
-      description: 'Get recent messages from the current conversation for additional context. '
-        + 'You only see the last 2 exchanges by default. Call this when the user references '
-        + 'something from earlier ("as I said", "continue", "what about X we discussed").',
+    browse_history: tool({
+      description: 'Browse conversation history page by page (newest first). You only see the last 2 exchanges in context. '
+        + 'Use this to find something the user mentioned earlier: API keys, decisions, instructions, links, etc. '
+        + 'Start with page 0 and keep incrementing until you find what you need or hasMore is false. '
+        + 'Each page shows 20 messages.',
       inputSchema: z.object({
-        count: z.number().optional().describe('Number of messages to retrieve (default 20, max 50)'),
+        page: z.number().describe('Page number (0 = most recent 20 messages, 1 = next 20, etc.)'),
       }),
       execute: async (args) => {
         const chatId = configManager.getChatId();
         if (!chatId) return JSON.stringify({ error: 'No active chat' });
-        const count = Math.min(args.count ?? 20, 50);
-        const messages = messageRepo.getRecent(chatId, count);
+        const pageSize = 20;
+        const offset = (args.page ?? 0) * pageSize;
+        const messages = messageRepo.getPage(chatId, pageSize, offset);
         return JSON.stringify({
+          page: args.page ?? 0,
+          count: messages.length,
+          hasMore: messages.length === pageSize,
           messages: messages.map((m) => ({
             role: m.role,
             text: m.text.length > 500 ? m.text.slice(0, 500) + '...' : m.text,
@@ -589,8 +594,9 @@ function createHistoryTools(messageRepo: MessageRepository, configManager: Confi
     }),
 
     search_conversation_history: tool({
-      description: 'Search through past conversation history. Use this when the user asks about previous conversations, '
-        + 'e.g. "what did I ask about last week?", "find our conversation about X", "what did you recommend for Y?"',
+      description: 'Search through conversation history by keyword. Returns messages containing the search text. '
+        + 'Use this when you know EXACTLY what to search for (a name, a key prefix, a service name). '
+        + 'If the search returns nothing, try different keywords or use browse_history to scan page by page.',
       inputSchema: z.object({
         query: z.string().describe('Search text to find in past messages'),
         limit: z.number().optional().describe('Max results to return (default 10)'),

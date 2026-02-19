@@ -47,6 +47,13 @@ export class MessageRepository {
     return rows.reverse(); // chronological order
   }
 
+  /** Get a page of messages for a chat, ordered newest-first. Used for paginated history browsing. */
+  getPage(chatId: number, limit: number, offset: number): StoredMessage[] {
+    return this.db.prepare(
+      'SELECT * FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT ? OFFSET ?',
+    ).all(chatId, limit, offset) as StoredMessage[];
+  }
+
   /** Full-text search across all messages for a chat. */
   search(chatId: number, query: string, limit = 20): StoredMessage[] {
     return this.db.prepare(
