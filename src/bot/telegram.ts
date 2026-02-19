@@ -50,8 +50,8 @@ export class TelegramBot {
             await tCtx.sendChatAction('typing');
             const response = await this.assistant.process('👋');
             if (response) {
-              const formatted = response.replace(/^#{1,6}\s+(.+)$/gm, '*$1*');
-              await tCtx.reply(formatted, { parse_mode: 'Markdown' }).catch(() => tCtx.reply(formatted));
+              const formatted = response.replace(/^#{1,6}\s+(.+)$/gm, '<b>$1</b>');
+              await tCtx.reply(formatted, { parse_mode: 'HTML' }).catch(() => tCtx.reply(response));
             }
           } catch (err) {
             console.error('AI greeting failed:', err);

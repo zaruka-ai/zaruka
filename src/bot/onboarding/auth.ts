@@ -95,9 +95,9 @@ export async function handleAuthMethod(
         await ctx.editMessageText(
           'Sign in with your ChatGPT account:\n\n'
           + '1. Open: https://auth.openai.com/codex/device\n'
-          + `2. Enter code: \`${userCode}\`\n\n`
+          + `2. Enter code: <code>${userCode}</code>\n\n`
           + 'Waiting for authorization...\n\nOr paste a session token if you have one.',
-          { parse_mode: 'Markdown' },
+          { parse_mode: 'HTML' },
         );
         console.log('Onboarding: starting device code polling in background');
         pollDeviceCodeInBackground(handler, ctx);

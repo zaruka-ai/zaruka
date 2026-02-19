@@ -6,10 +6,64 @@ import { buildRateLimitMessage } from './providers.js';
 import { closeUnclosedCodeFences, detectLanguage, splitMessage } from './utils.js';
 import { t } from './i18n.js';
 
-/** Convert unsupported Markdown to Telegram-compatible format. */
-function toTelegramMarkdown(text: string): string {
-  // Convert ### Header, ## Header, # Header → *Header*
-  return text.replace(/^#{1,6}\s+(.+)$/gm, '*$1*');
+/** Escape HTML special characters. */
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
+ * Convert Markdown to Telegram-compatible HTML.
+ * HTML parse_mode is far more robust than Markdown — special characters
+ * like (), «», ≤ etc. don't break the parser.
+ */
+function toTelegramHtml(text: string): string {
+  // 1. Extract fenced code blocks → placeholders
+  const codeBlocks: string[] = [];
+  let result = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+    const i = codeBlocks.length;
+    const escaped = escapeHtml(code.trimEnd());
+    codeBlocks.push(
+      lang
+        ? `<pre><code class="language-${escapeHtml(lang)}">${escaped}</code></pre>`
+        : `<pre><code>${escaped}</code></pre>`,
+    );
+    return `\x00CB${i}\x00`;
+  });
+
+  // 2. Extract inline code → placeholders
+  const inlineCodes: string[] = [];
+  result = result.replace(/`([^`]+)`/g, (_, code) => {
+    const i = inlineCodes.length;
+    inlineCodes.push(`<code>${escapeHtml(code)}</code>`);
+    return `\x00IC${i}\x00`;
+  });
+
+  // 3. Escape HTML in the remaining text
+  result = escapeHtml(result);
+
+  // 4. Headers → bold
+  result = result.replace(/^#{1,6}\s+(.+)$/gm, '<b>$1</b>');
+
+  // 5. **bold** → <b>
+  result = result.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+
+  // 6. *bold* → <b> (single asterisks, common in AI output)
+  result = result.replace(/\*(.+?)\*/g, '<b>$1</b>');
+
+  // 7. ~~strike~~ → <s>
+  result = result.replace(/~~(.+?)~~/g, '<s>$1</s>');
+
+  // 8. [text](url) → <a> (& and < already escaped, undo for href)
+  result = result.replace(
+    /\[([^\]]+)\]\(([^)]+)\)/g,
+    (_, label, url) => `<a href="${url.replace(/&amp;/g, '&')}">${label}</a>`,
+  );
+
+  // 9. Restore placeholders
+  result = result.replace(/\x00CB(\d+)\x00/g, (_, i) => codeBlocks[parseInt(i)]);
+  result = result.replace(/\x00IC(\d+)\x00/g, (_, i) => inlineCodes[parseInt(i)]);
+
+  return result;
 }
 
 /** Dedup: remember recently processed message IDs to ignore re-delivered updates after restarts. */
@@ -275,7 +329,7 @@ class TelegramStreamWriter {
       const tail = this.buffer.slice(cutAt);
 
       // Finalize the current message with the head portion
-      await this.editMessage(this.messageId, closeUnclosedCodeFences(toTelegramMarkdown(head)));
+      await this.editMessage(this.messageId, closeUnclosedCodeFences(toTelegramHtml(head)));
       this.finalizedMessages.push(this.messageId);
 
       // Start a new message for the rest
@@ -286,7 +340,7 @@ class TelegramStreamWriter {
       return;
     }
 
-    const display = closeUnclosedCodeFences(toTelegramMarkdown(this.buffer));
+    const display = closeUnclosedCodeFences(toTelegramHtml(this.buffer));
     await this.editMessage(this.messageId, display);
     this.lastEditText = this.buffer;
   }
@@ -297,7 +351,7 @@ class TelegramStreamWriter {
 
     const hasMoreOptions = finalText.includes('[MORE_OPTIONS]');
     const cleaned = finalText.replace(/\[MORE_OPTIONS\]\s*/g, '').trimEnd();
-    const formatted = toTelegramMarkdown(cleaned);
+    const formatted = toTelegramHtml(cleaned);
     const chunks = splitMessage(formatted, 4000);
 
     // Edit the first message with the first chunk (or a finalized message's content)
@@ -308,7 +362,7 @@ class TelegramStreamWriter {
 
     if (chunks.length === 1 && this.finalizedMessages.length === 0) {
       // Simple case: everything fits in the one message
-      const extra: Record<string, unknown> = { parse_mode: 'Markdown' };
+      const extra: Record<string, unknown> = { parse_mode: 'HTML' };
       if (hasMoreOptions) {
         extra.reply_markup = Markup.inlineKeyboard([
           [Markup.button.callback('🔍 Show more', 'more_options')],
@@ -328,7 +382,7 @@ class TelegramStreamWriter {
 
       for (let i = 0; i < chunks.length; i++) {
         const isLast = i === chunks.length - 1;
-        const extra: Record<string, unknown> = { parse_mode: 'Markdown' };
+        const extra: Record<string, unknown> = { parse_mode: 'HTML' };
         if (isLast && hasMoreOptions) {
           extra.reply_markup = Markup.inlineKeyboard([
             [Markup.button.callback('🔍 Show more', 'more_options')],
@@ -374,7 +428,7 @@ class TelegramStreamWriter {
     try {
       await this.tCtx.telegram.editMessageText(
         this.chatId, msgId, undefined, text,
-        { parse_mode: 'Markdown', ...extra },
+        { parse_mode: 'HTML', ...extra },
       );
     } catch {
       // Markdown failed — retry without parse_mode
