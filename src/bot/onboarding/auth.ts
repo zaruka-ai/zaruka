@@ -2,6 +2,7 @@ import type { AiProvider } from '../../core/types.js';
 import {
   generatePKCE, buildAuthUrl, extractAuthCode, exchangeCodeForTokens,
   requestDeviceCode, pollDeviceToken,
+  requestQwenDeviceCode, pollQwenDeviceToken,
   ANTHROPIC_OAUTH, OPENAI_OAUTH,
 } from '../../auth/oauth.js';
 import { OAUTH_PROVIDERS, PROVIDER_API_KEY_HINTS } from '../providers.js';
@@ -40,12 +41,13 @@ export async function handleProviderSelected(
     );
   } else if (OAUTH_PROVIDERS.has(provider)) {
     state.step = 'auth_method';
-    const providerLabel = provider === 'anthropic' ? 'Claude' : 'ChatGPT';
+    const providerLabel = provider === 'anthropic' ? 'Claude' : provider === 'qwen' ? 'Qwen' : 'ChatGPT';
+    const oauthDesc = provider === 'qwen' ? 'free via OAuth' : 'subscription';
     const { Markup } = await import('telegraf');
     await ctx.editMessageText(
       'How would you like to authenticate?',
       Markup.inlineKeyboard([
-        [Markup.button.callback(`Sign in with ${providerLabel} (subscription)`, 'onboard_auth:oauth')],
+        [Markup.button.callback(`Sign in with ${providerLabel} (${oauthDesc})`, 'onboard_auth:oauth')],
         [Markup.button.callback('API Key (pay-as-you-go)', 'onboard_auth:api_key')],
         [Markup.button.callback('« Back', 'onboard_back_provider')],
       ]),
@@ -86,6 +88,27 @@ export async function handleAuthMethod(
         + 'After signing in, copy the full URL from your browser and send it here.\n\n'
         + 'Or paste a setup token (starts with sk-ant-oat01-).',
       );
+    } else if (provider === 'qwen') {
+      try {
+        const qwenDevice = await requestQwenDeviceCode();
+        state.deviceAuthId = qwenDevice.deviceCode;
+        state.deviceUserCode = qwenDevice.userCode;
+        state.codeVerifier = qwenDevice.codeVerifier;
+        state.isPolling = true;
+        await ctx.editMessageText(
+          'Sign in with your Qwen account:\n\n'
+          + `Open: ${qwenDevice.verificationUrl}\n\n`
+          + 'Waiting for authorization...',
+          { parse_mode: 'HTML' },
+        );
+        console.log('Onboarding: starting Qwen device code polling in background');
+        pollQwenDeviceCodeInBackground(handler, ctx);
+      } catch (err) {
+        console.error('Qwen device code request failed:', err);
+        await ctx.editMessageText(
+          'Could not start device authorization. Please paste your DashScope API key directly.',
+        );
+      }
     } else {
       try {
         const { deviceAuthId, userCode } = await requestDeviceCode(OPENAI_OAUTH);
@@ -137,6 +160,13 @@ export async function handleApiKeyInput(
         return;
       }
     }
+  } else if (state.isOAuth && state.provider === 'qwen') {
+    if (state.isPolling) {
+      await ctx.reply('Waiting for authorization... Please complete sign-in in your browser.');
+      return;
+    }
+    // Should not reach here — Qwen OAuth completes via polling only
+    state.apiKey = input;
   } else if (state.isOAuth && state.provider === 'openai') {
     if (state.isPolling) {
       if (input.startsWith('sk-') || input.length > 40) {
@@ -196,6 +226,48 @@ function pollDeviceCodeInBackground(
     console.error('Onboarding: device polling failed —', msg);
     await ctx.reply(
       'Device authorization failed: ' + msg + '\n\nPlease try again or paste a session token directly.',
+    );
+  });
+}
+
+function pollQwenDeviceCodeInBackground(
+  handler: OnboardingHandler, ctx: Ctx,
+): void {
+  const state = handler.state!;
+  const deviceCode = state.deviceAuthId!;
+  const codeVerifier = state.codeVerifier!;
+
+  pollQwenDeviceToken(
+    deviceCode, codeVerifier, 300, 2000,
+    (attempt, max, status) => {
+      if (attempt % 30 === 0) {
+        const remaining = Math.ceil((max - attempt) * 2 / 60);
+        console.log(`Onboarding: Qwen device polling attempt ${attempt}/${max} — ${status}, ~${remaining} min left`);
+      }
+    },
+  ).then(async (tokens) => {
+    const current = handler.state;
+    if (!current?.isPolling) {
+      console.log('Onboarding: Qwen device polling completed but was cancelled — ignoring');
+      return;
+    }
+    current.isPolling = false;
+    current.apiKey = tokens.accessToken;
+    current.refreshToken = tokens.refreshToken;
+    current.tokenExpiresIn = tokens.expiresIn;
+    current.baseUrl = tokens.resourceUrl || undefined;
+    console.log('Onboarding: Qwen device authorization successful');
+    await ctx.reply('Authorization successful!');
+    current.step = 'model';
+    await sendModelSelection(handler, ctx);
+  }).catch(async (err) => {
+    const current = handler.state;
+    if (!current?.isPolling) return;
+    current.isPolling = false;
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('Onboarding: Qwen device polling failed —', msg);
+    await ctx.reply(
+      'Qwen authorization failed: ' + msg + '\n\nPlease try again or paste your DashScope API key directly.',
     );
   });
 }

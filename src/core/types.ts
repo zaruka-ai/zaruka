@@ -67,7 +67,7 @@ export type McpServerConfig = McpStdioConfig | McpHttpConfig;
 
 // === Config ===
 
-export type AiProvider = 'anthropic' | 'openai' | 'google' | 'deepseek' | 'groq' | 'xai' | 'openai-compatible';
+export type AiProvider = 'anthropic' | 'openai' | 'google' | 'deepseek' | 'groq' | 'xai' | 'qwen' | 'openai-compatible';
 
 export type AiProviderConfig = {
   provider: AiProvider;

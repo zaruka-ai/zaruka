@@ -11,6 +11,7 @@ export const PROVIDER_LABELS: Record<AiProvider, string> = {
   deepseek: 'DeepSeek',
   groq: 'Groq',
   xai: 'xAI (Grok)',
+  qwen: 'Qwen',
   'openai-compatible': 'Self-hosted (Ollama, etc.)',
 };
 
@@ -19,6 +20,7 @@ export const PROVIDER_BASE_URLS: Record<string, string> = {
   deepseek: 'https://api.deepseek.com',
   groq: 'https://api.groq.com/openai/v1',
   xai: 'https://api.x.ai/v1',
+  qwen: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
 };
 
 /** API key hints shown during onboarding. */
@@ -29,10 +31,11 @@ export const PROVIDER_API_KEY_HINTS: Record<string, string> = {
   deepseek: 'Send your DeepSeek API key.\n\nGet one at: https://platform.deepseek.com/api_keys',
   groq: 'Send your Groq API key.\n\nGet one at: https://console.groq.com/keys',
   xai: 'Send your xAI API key.\n\nGet one at: https://console.x.ai',
+  qwen: 'Send your DashScope API key.\n\nGet one at: https://dashscope.console.aliyun.com/apiKey',
 };
 
 /** Providers that support OAuth sign-in (subscription-based). */
-export const OAUTH_PROVIDERS = new Set<AiProvider>(['anthropic', 'openai']);
+export const OAUTH_PROVIDERS = new Set<AiProvider>(['anthropic', 'openai', 'qwen']);
 
 /** Build the inline keyboard with provider buttons. */
 export function providerKeyboard() {
@@ -40,13 +43,14 @@ export function providerKeyboard() {
     [Markup.button.callback('Anthropic (Claude)', 'onboard:anthropic'), Markup.button.callback('OpenAI (GPT)', 'onboard:openai')],
     [Markup.button.callback('Google (Gemini)', 'onboard:google'), Markup.button.callback('DeepSeek', 'onboard:deepseek')],
     [Markup.button.callback('Groq', 'onboard:groq'), Markup.button.callback('xAI (Grok)', 'onboard:xai')],
+    [Markup.button.callback('Qwen', 'onboard:qwen')],
     [Markup.button.callback('Self-hosted (Ollama, etc.)', 'onboard:openai-compatible')],
   ]);
 }
 
 /** Build inline keyboard listing providers for the settings model flow. */
 export function settingsProviderKeyboard(currentProvider?: AiProvider) {
-  const providers: AiProvider[] = ['anthropic', 'openai', 'google', 'deepseek', 'groq', 'xai', 'openai-compatible'];
+  const providers: AiProvider[] = ['anthropic', 'openai', 'google', 'deepseek', 'groq', 'xai', 'qwen', 'openai-compatible'];
   const rows = [];
   for (let i = 0; i < providers.length; i += 2) {
     const row = providers.slice(i, i + 2).map((id) => {
@@ -104,7 +108,7 @@ export async function testAiConnection(ai: NonNullable<ZarukaConfig['ai']>): Pro
     console.log(`testAiConnection: provider=${ai.provider}, model=${ai.model}, hasApiKey=${!!ai.apiKey}, hasAuthToken=${!!ai.authToken}`);
 
     // ChatGPT OAuth: test with a direct fetch to bypass AI SDK quirks
-    if (ai.authToken && (!ai.provider || ai.provider === 'openai')) {
+    if (ai.authToken && ai.provider === 'openai') {
       return await testChatGPTConnection(ai);
     }
 
@@ -205,6 +209,11 @@ export function buildRateLimitMessage(provider: AiProvider | undefined, isOAuth:
 
     case 'xai':
       return '⚠️ xAI rate limit reached\n\n'
+        + 'Wait a moment and try again.'
+        + retryHint;
+
+    case 'qwen':
+      return '⚠️ Qwen rate limit reached\n\n'
         + 'Wait a moment and try again.'
         + retryHint;
 

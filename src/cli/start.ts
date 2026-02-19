@@ -82,6 +82,8 @@ function getDefaultModel(provider?: string): string {
       return 'llama-3.3-70b-versatile';
     case 'xai':
       return 'grok-3';
+    case 'qwen':
+      return 'coder-model';
     default:
       return 'llama3';
   }
@@ -140,7 +142,7 @@ function buildSystemPrompt(
     '- *bold* for emphasis, _italic_ for secondary, `code` for inline code',
     '- [link text](url) for links',
     '- Do NOT use # or ## or ### for headers — Telegram does not support them. Use *bold text* instead.',
-    '- Bot commands like /settings must be plain text, never in backticks — Telegram makes them clickable automatically.',
+    '- CRITICAL: Bot commands (/settings, /tasks, /help, /usage, etc.) must NEVER be wrapped in backticks or any formatting. Write them as plain text — Telegram makes them clickable automatically. Wrong: `/settings`. Right: /settings.',
     '',
     'MEDIA CAPABILITIES:',
     '- You CAN analyze images and documents (PDFs) that users send you. Describe, summarize, answer questions about them.',

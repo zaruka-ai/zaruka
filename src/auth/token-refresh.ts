@@ -1,5 +1,5 @@
 import type { ConfigManager } from '../core/config-manager.js';
-import { refreshAccessToken, ANTHROPIC_OAUTH, OPENAI_OAUTH } from './oauth.js';
+import { refreshAccessToken, refreshQwenToken, ANTHROPIC_OAUTH, OPENAI_OAUTH } from './oauth.js';
 
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -13,8 +13,13 @@ async function tryRefresh(
   const ai = config.ai;
   if (!ai?.refreshToken) return;
 
-  const oauthConfig = ai.provider === 'anthropic' ? ANTHROPIC_OAUTH : OPENAI_OAUTH;
-  const tokens = await refreshAccessToken(oauthConfig, ai.refreshToken);
+  let tokens;
+  if (ai.provider === 'qwen') {
+    tokens = await refreshQwenToken(ai.refreshToken);
+  } else {
+    const oauthConfig = ai.provider === 'anthropic' ? ANTHROPIC_OAUTH : OPENAI_OAUTH;
+    tokens = await refreshAccessToken(oauthConfig, ai.refreshToken);
+  }
 
   const expiresAt = tokens.expiresIn
     ? new Date(Date.now() + tokens.expiresIn * 1000).toISOString()
@@ -24,6 +29,7 @@ async function tryRefresh(
     tokens.accessToken,
     tokens.refreshToken ?? ai.refreshToken,
     expiresAt,
+    tokens.resourceUrl,
   );
 
   console.log('OAuth token refreshed successfully.');

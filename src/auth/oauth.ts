@@ -23,6 +23,8 @@ export interface TokenResponse {
   accessToken: string;
   refreshToken?: string;
   expiresIn?: number;
+  /** Qwen OAuth returns a dynamic API base URL. */
+  resourceUrl?: string;
 }
 
 export interface DeviceCodeResponse {
@@ -52,6 +54,13 @@ export const OPENAI_OAUTH: OAuthConfig = {
     id_token_add_organizations: 'true',
     codex_cli_simplified_flow: 'true',
   },
+};
+
+export const QWEN_OAUTH = {
+  deviceCodeUrl: 'https://chat.qwen.ai/api/v1/oauth2/device/code',
+  tokenUrl: 'https://chat.qwen.ai/api/v1/oauth2/token',
+  clientId: 'f0304373b74a44d2b584a3fb70ca9e56',
+  scopes: 'openid profile email model.completion',
 };
 
 // === PKCE helpers ===
@@ -295,4 +304,143 @@ export async function pollDeviceToken(
   }
 
   throw new Error('Device authorization timed out. Please try again.');
+}
+
+/**
+ * Normalize Qwen's resource_url into a proper base URL for the OpenAI SDK.
+ * Matches qwen-code behavior: ensure https:// prefix and /v1 suffix.
+ */
+function normalizeResourceUrl(raw: string): string {
+  let url = raw;
+  if (!/^https?:\/\//.test(url)) url = 'https://' + url;
+  url = url.replace(/\/+$/, '');
+  if (!url.endsWith('/v1')) url += '/v1';
+  return url;
+}
+
+// === Qwen Device Code flow ===
+
+export interface QwenDeviceCodeResponse {
+  deviceCode: string;
+  userCode: string;
+  verificationUrl: string;
+  codeVerifier: string;
+}
+
+export async function requestQwenDeviceCode(): Promise<QwenDeviceCodeResponse> {
+  const pkce = generatePKCE();
+
+  const res = await fetch(QWEN_OAUTH.deviceCodeUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Accept': 'application/json',
+    },
+    body: new URLSearchParams({
+      client_id: QWEN_OAUTH.clientId,
+      scope: QWEN_OAUTH.scopes,
+      code_challenge: pkce.codeChallenge,
+      code_challenge_method: 'S256',
+    }).toString(),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Qwen device code request failed (${res.status}): ${text}`);
+  }
+
+  const data = await res.json() as Record<string, unknown>;
+  return {
+    deviceCode: data.device_code as string,
+    userCode: data.user_code as string,
+    verificationUrl: (data.verification_uri_complete || data.verification_uri || 'https://chat.qwen.ai/device') as string,
+    codeVerifier: pkce.codeVerifier,
+  };
+}
+
+export async function pollQwenDeviceToken(
+  deviceCode: string,
+  codeVerifier: string,
+  maxAttempts = 300,
+  intervalMs = 2000,
+  onProgress?: (attempt: number, maxAttempts: number, status: string) => void,
+): Promise<TokenResponse> {
+  let currentInterval = intervalMs;
+
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      const res = await fetch(QWEN_OAUTH.tokenUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Accept': 'application/json',
+        },
+        body: new URLSearchParams({
+          grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+          client_id: QWEN_OAUTH.clientId,
+          device_code: deviceCode,
+          code_verifier: codeVerifier,
+        }).toString(),
+      });
+
+      const data = await res.json() as Record<string, unknown>;
+      console.log(`[QwenPoll] status=${res.status} data=${JSON.stringify(data).slice(0, 300)}`);
+
+      if (res.ok && data.access_token) {
+        return {
+          accessToken: data.access_token as string,
+          refreshToken: data.refresh_token as string | undefined,
+          expiresIn: data.expires_in as number | undefined,
+          resourceUrl: typeof data.resource_url === 'string' ? normalizeResourceUrl(data.resource_url) : undefined,
+        };
+      }
+
+      const rawError = data.error as string | undefined;
+
+      // Slow down if server asks
+      if (res.status === 429 || rawError === 'slow_down') {
+        currentInterval = Math.min(currentInterval * 1.5, 10000);
+      }
+
+      const status = rawError || `http ${res.status}`;
+      onProgress?.(i + 1, maxAttempts, status);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[QwenPoll] Error: ${msg}`);
+      onProgress?.(i + 1, maxAttempts, 'network error');
+      if (i === maxAttempts - 1) throw err;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, currentInterval));
+  }
+
+  throw new Error('Qwen device authorization timed out. Please try again.');
+}
+
+export async function refreshQwenToken(refreshToken: string): Promise<TokenResponse> {
+  const res = await fetch(QWEN_OAUTH.tokenUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Accept': 'application/json',
+    },
+    body: new URLSearchParams({
+      grant_type: 'refresh_token',
+      client_id: QWEN_OAUTH.clientId,
+      refresh_token: refreshToken,
+    }).toString(),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Qwen token refresh failed (${res.status}): ${text}`);
+  }
+
+  const data = await res.json() as Record<string, unknown>;
+  return {
+    accessToken: data.access_token as string,
+    refreshToken: data.refresh_token as string | undefined,
+    expiresIn: data.expires_in as number | undefined,
+    resourceUrl: typeof data.resource_url === 'string' ? normalizeResourceUrl(data.resource_url) : undefined,
+  };
 }

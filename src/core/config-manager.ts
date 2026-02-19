@@ -150,7 +150,7 @@ export class ConfigManager {
     return this.config.resourceMonitor?.cronExpression ?? '*/5 * * * *';
   }
 
-  updateAuthToken(authToken: string, refreshToken?: string, expiresAt?: string): void {
+  updateAuthToken(authToken: string, refreshToken?: string, expiresAt?: string, baseUrl?: string): void {
     if (this.config.ai) {
       this.config.ai.authToken = authToken;
       if (refreshToken !== undefined) {
@@ -158,6 +158,9 @@ export class ConfigManager {
       }
       if (expiresAt !== undefined) {
         this.config.ai.tokenExpiresAt = expiresAt;
+      }
+      if (baseUrl !== undefined) {
+        this.config.ai.baseUrl = baseUrl;
       }
       this.save();
     }

@@ -11,6 +11,7 @@ const PROVIDER_BASE_URLS: Record<string, string> = {
   deepseek: 'https://api.deepseek.com',
   groq: 'https://api.groq.com/openai/v1',
   xai: 'https://api.x.ai/v1',
+  qwen: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
 };
 
 function createProvider(ai: AiConfig): (model: string) => LanguageModel {
@@ -65,7 +66,22 @@ function createProvider(ai: AiConfig): (model: string) => LanguageModel {
     return (model) => openai(model);
   }
 
-  // openai, deepseek, groq, xai, openai-compatible — all use OpenAI SDK
+  // Qwen with OAuth — use DashScope API with special auth headers
+  if (ai.provider === 'qwen' && ai.authToken) {
+    const baseURL = ai.baseUrl || PROVIDER_BASE_URLS.qwen;
+    const openai = createOpenAI({
+      apiKey: ai.authToken,
+      baseURL,
+      ...{ compatibility: 'compatible' as const },
+      headers: {
+        'X-DashScope-AuthType': 'qwen-oauth',
+        'X-DashScope-CacheControl': 'enable',
+      },
+    });
+    return (model) => openai.chat(model);
+  }
+
+  // openai, deepseek, groq, xai, qwen (API key), openai-compatible — all use OpenAI SDK
   const baseURL = ai.baseUrl || PROVIDER_BASE_URLS[ai.provider] || undefined;
   const isThirdParty = ai.provider !== 'openai';
   const openai = createOpenAI({
@@ -108,6 +124,7 @@ const BEST_MODELS: Record<string, string> = {
   deepseek: 'deepseek-chat',
   groq: 'llama-3.3-70b-versatile',
   xai: 'grok-3',
+  qwen: 'coder-model',
 };
 
 /**

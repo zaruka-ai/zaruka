@@ -56,6 +56,7 @@ const POPULAR_FAMILIES: Partial<Record<string, RegExp[]>> = {
   deepseek: [/^deepseek-chat/, /^deepseek-reasoner/],
   groq: [/llama.*70b/i, /llama.*(maverick|scout)/i, /qwen|deepseek/i],
   xai: [/^grok-\d/, /mini/, /fast/],
+  qwen: [/qwen-max/, /qwen-plus/, /qwen-turbo/],
 };
 
 /**
@@ -97,6 +98,15 @@ export async function fetchAvailableModels(ai: NonNullable<ZarukaConfig['ai']>):
         break;
       case 'google':
         all = await fetchGoogleModels(ai);
+        break;
+      case 'qwen':
+        // OAuth: server aliases only (no /models endpoint); API key: dynamic via DashScope
+        all = ai.authToken
+          ? [
+            { id: 'coder-model', label: 'Coder Model (Qwen 3.5 Plus)' },
+            { id: 'vision-model', label: 'Vision Model' },
+          ]
+          : await fetchOpenAICompatibleModels(ai);
         break;
       case 'openai':
       default:
@@ -195,9 +205,14 @@ async function fetchChatGPTModels(ai: NonNullable<ZarukaConfig['ai']>): Promise<
 async function fetchOpenAICompatibleModels(ai: NonNullable<ZarukaConfig['ai']>): Promise<ModelOption[]> {
   const key = ai.apiKey || ai.authToken;
   const baseURL = ai.baseUrl || PROVIDER_BASE_URLS[ai.provider] || undefined;
+  // Qwen OAuth needs DashScope auth headers
+  const defaultHeaders = ai.provider === 'qwen' && ai.authToken
+    ? { 'X-DashScope-AuthType': 'qwen-oauth', 'X-DashScope-CacheControl': 'enable' }
+    : undefined;
   const client = new OpenAI({
     apiKey: key || 'no-key',
     ...(baseURL ? { baseURL } : {}),
+    ...(defaultHeaders ? { defaultHeaders } : {}),
   });
   const list = await client.models.list();
   const allModels = [];
