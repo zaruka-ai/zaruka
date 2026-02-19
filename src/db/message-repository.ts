@@ -6,6 +6,17 @@ export interface StoredMessage {
   role: 'user' | 'assistant';
   text: string;
   created_at: string;
+  file_id?: string | null;
+  file_type?: string | null;
+  mime_type?: string | null;
+  file_name?: string | null;
+}
+
+export interface AttachmentMeta {
+  fileId: string;
+  fileType: 'photo' | 'document';
+  mimeType?: string;
+  fileName?: string;
 }
 
 export class MessageRepository {
@@ -15,11 +26,17 @@ export class MessageRepository {
     this.db = db;
   }
 
-  /** Save a message to persistent history. */
-  save(chatId: number, role: 'user' | 'assistant', text: string): void {
-    this.db.prepare(
-      'INSERT INTO messages (chat_id, role, text) VALUES (?, ?, ?)',
-    ).run(chatId, role, text);
+  /** Save a message to persistent history, optionally with file attachment metadata. */
+  save(chatId: number, role: 'user' | 'assistant', text: string, attachment?: AttachmentMeta): void {
+    if (attachment) {
+      this.db.prepare(
+        'INSERT INTO messages (chat_id, role, text, file_id, file_type, mime_type, file_name) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).run(chatId, role, text, attachment.fileId, attachment.fileType, attachment.mimeType ?? null, attachment.fileName ?? null);
+    } else {
+      this.db.prepare(
+        'INSERT INTO messages (chat_id, role, text) VALUES (?, ?, ?)',
+      ).run(chatId, role, text);
+    }
   }
 
   /** Get the last N messages for a chat (for context window). Returned in chronological order. */

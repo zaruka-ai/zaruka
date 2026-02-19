@@ -61,5 +61,13 @@ export function getDb(): Database.Database {
   if (!colNames.has('recurrence')) db.exec('ALTER TABLE tasks ADD COLUMN recurrence TEXT');
   if (!colNames.has('action')) db.exec('ALTER TABLE tasks ADD COLUMN action TEXT');
 
+  // Migrate: add file attachment columns to messages
+  const msgCols = db.prepare("PRAGMA table_info('messages')").all() as { name: string }[];
+  const msgColNames = new Set(msgCols.map((c) => c.name));
+  if (!msgColNames.has('file_id')) db.exec('ALTER TABLE messages ADD COLUMN file_id TEXT');
+  if (!msgColNames.has('file_type')) db.exec('ALTER TABLE messages ADD COLUMN file_type TEXT');
+  if (!msgColNames.has('mime_type')) db.exec('ALTER TABLE messages ADD COLUMN mime_type TEXT');
+  if (!msgColNames.has('file_name')) db.exec('ALTER TABLE messages ADD COLUMN file_name TEXT');
+
   return db;
 }
